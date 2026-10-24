@@ -13,24 +13,26 @@
 - [ ] C1 №12 усі `reference/ref_*.bin` читаються, усі `bad_*.bin` дають очікувані коди з `expected_failures.json`; повний прогін у ліміті часу
 - [ ] C1 №7, №8 у сценаріях «штатний» і «деградований» (разом з Yaroslav і Artem)
 - [ ] `pipeline.run` повертає S, R, T, Q; працюють перемикачі для абляцій
-- [ ] Звіт, README запуску, відтворення результатів однією командою, зведений `META-USAGE.md` і `DECISIONS.md`
+- [ ] `Config` читає `team_config.json`; зміна бюджету, надійності вузла чи кількості класів у конфігу перераховується без правки коду
+- [ ] `scripts/reproduce.py` відтворює все в `results/` (включно з `c1.md`) однією командою
+- [ ] Звіт, README запуску, зведений `META-USAGE.md` і `DECISIONS.md`
 
 ## Файли у твоїй власності
 
-`log3/records.py`, `log3/payload.py`, `log3/crypto.py`, `log3/replica.py`, `log3/recovery.py`, `log3/pipeline.py`,
+`log3/config.py`, `log3/records.py`, `log3/payload.py`, `log3/crypto.py`, `log3/replica.py`, `log3/recovery.py`, `log3/pipeline.py`,
 `tests/test_records.py`, `test_payload.py`, `test_replica.py`, `test_recovery.py`, `test_pipeline.py`, `tests/conftest.py`,
-`requirements.txt`, `.github/workflows/test.yml`, `scripts/reproduce.py`, `docs/*` (крім чужих завдань), `README.md`.
+`requirements.txt`, `.github/workflows/test.yml`, `scripts/reproduce.py`, `results/c1.md`, таблиці 3–5 у `results/tables/`, `docs/*` (крім чужих завдань), `README.md`.
 
 ## Що тобі потрібно від інших і що віддаєш
 
 - Від Yaroslav: `huffman.py` (до кінця тижня 3), `planner.plan_window` (тиждень 7).
 - Від Artem: `classify_records` (тиждень 9); tamper-тест для кейсу №10.
-- Віддаєш: `records.py` (тиждень 1, день 2 — першим PR), `parse_replica` (тиждень 4), `pipeline.evaluate` (тиждень 9), `conftest.py` (додає `materials/` у `sys.path`), `requirements.txt`, CI.
+- Віддаєш: `records.py` і `config.py` (тиждень 1, день 2 — першим PR), `parse_replica` і `as_receiver` (тиждень 4), `pipeline.evaluate` (тиждень 9), `conftest.py` (додає `materials/` у `sys.path`), `requirements.txt`, CI.
 
 ## План по тижнях
 
-- **Тиждень 1 (Зріз 0).** Прочитай `REPLICATION_SPEC.md`, `team_config.json`, `replication.py`; закрий відкриті питання з `OVERVIEW.md` у `DECISIONS.md`. `records.py` + `load_records_csv` (дивись колонки `train.csv`). `requirements.txt`, CI з `pytest -q`, `conftest.py`. Зафіксуй рівні трьох учасників.
-- **Тижні 2–4 (Чекпоінт 1).** `payload.py` спершу з `NO_COMPRESSION`, потім зі стисненням (коли готовий Гаффман). `crypto.py`, `replica.py` із приймальним порядком із §5. Прогнати всі `ref_*` і `bad_*`. Fuzz-тест: випадкові/обрізані/змінені байти ніколи не дають іншого винятку, ніж `Log3Error`.
+- **Тиждень 1 (Зріз 0).** Прочитай `REPLICATION_SPEC.md`, `team_config.json`, `replication.py`; закрий відкриті питання з `OVERVIEW.md` у `DECISIONS.md`. `config.py` (читає `team_config.json`, оновити розділ 0 у `CONTRACTS.md`) і `records.py` + `load_records_csv` (дивись колонки `train.csv`). `requirements.txt`, CI з `pytest -q`, `conftest.py`. Зафіксуй рівні трьох учасників.
+- **Тижні 2–4 (Чекпоінт 1).** Календар викладача ставить AES/HMAC на тижні 10–11, але всі еталонні репліки зашифровані, тож `crypto.py` потрібен уже тут. `payload.py` спершу з `NO_COMPRESSION`, потім зі стисненням (коли готовий Гаффман). `crypto.py`, `replica.py` із приймальним порядком із §5. Прогнати всі `ref_*` і `bad_*`. Fuzz-тест: випадкові/обрізані/змінені байти ніколи не дають іншого винятку, ніж `Log3Error`.
 - **Тижні 5–7.** `recovery.py` (парсить кожну репліку, відкидає зіпсовані, дедуплікація за 16-байтовим поданням). `pipeline.py`: прогін replication.py у трьох сценаріях, метрика S/R/T/Q, таймер.
 - **Тижні 8–9 (Чекпоінт 2).** Підключити класи від Artem і план від Yaroslav; перші повні Q.
 - **Тижні 10–11.** `pipeline.evaluate` для ГА (усереднення за кількома відкритими seeds, щоб не перенавчитись). Стенд абляцій: без перцептрона / без ДП / без ГА / повна система; стиснення до і після шифрування; 1/2/3 копії.
@@ -49,6 +51,8 @@
 - Інваріант `symbol_count = 16 × record_count`; порушення → `E_PAYLOAD`. Невідомий прапорець розширення → `E_PAYLOAD`. Крос-сумісність лише при `flags & 0x03 == 0`.
 - Після декодування рівно `bitstream_len` байтів, лише нульовий padding; зайвий повний байт заборонено (`bad_07`). Таблиця довжин з Kraft ≠ 1 — відмова (`bad_06`).
 - Порядок «стиснути → зашифрувати → додати HMAC». Шифротекст не стискається — це пункт звіту.
+- Накладні витрати кожної репліки: 43 + 32 B обгортки, 14 B службових полів payload, `2×table_nsym` B таблиці (до 512 B). Для малих batch `NO_COMPRESSION` може бути коротшим — на цьому тримається ген `no_compression_threshold` (див. `build_payload`). `B_stored` рахує **фактичні** байти спроб запису, тож вага `w_i` у ДП — лише оцінка.
+- Жодних зашитих констант: бюджет, вікно, пріоритети, надійність вузлів, кількість класів і вузлів — з `Config`. Цю перевірку зроби на тижні 12: змінити конфіг і перегнати.
 
 ## Тести
 

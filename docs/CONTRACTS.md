@@ -4,6 +4,21 @@
 Зміна сигнатури — PR у `dev` із апрувом голови та власника зачепленого модуля.
 Загальне: Python ≥ 3.11, type hints, усе випадкове приймає `seed`, цілі big-endian. Назви полів конфігу бери з `materials/team_config.json`.
 
+## 0. `log3/config.py` — Гліб
+
+Усі параметри беруться з `materials/team_config.json`, нічого не зашивається в код: на захисті змінюють умову (один вузол вдвічі менш надійний, новий клас подій із вищою цінністю, бюджет −30 %), і це має зводитись до правки конфігу.
+
+```python
+@dataclass(frozen=True)
+class Config:
+    ...  # поля 1:1 з team_config.json: replication_window_records, max_batch_bytes, replication_budget_bits,
+         # priority за класами, critical_bonus, second_copy_factor, third_copy_factor,
+         # reliability_weight вузлів, alpha/beta/gamma, F1_min, мінімальний набір часових ознак
+def load_config(path: str = "materials/team_config.json") -> Config: ...
+```
+
+Гліб на тижні 1 звіряє назви полів із реальним файлом і оновлює цей розділ. Кількість класів і вузлів — не константи (`len(cfg.priority)`, вузли з конфігу).
+
 ## 1. `log3/records.py` — Гліб
 
 ```python
@@ -55,7 +70,10 @@ class ParsedPayload:
     flags: int
 
 def build_payload(records: list[Record], *, compress: bool = True,
+                  no_compression_threshold: float | None = None,
                   class_table: list[int] | None = None) -> bytes: ...
+    # поріг: якщо len(стиснене) > поріг * len(сирого) — писати сирі байти з прапорцем NO_COMPRESSION
+    # (таблиця Гаффмана коштує 2*table_nsym байтів, для малих batch сирі байти можуть бути коротшими)
 def parse_payload(payload: bytes) -> ParsedPayload: ...
     # інваріант symbol_count == 16 * record_count; reserved == 0; flags bits 4-7 == 0;
     # невідоме розширення (bit0/bit1) -> PayloadError; class_table лише за flag bit2, значення 0..2.
@@ -79,10 +97,13 @@ def derive_keys(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]: ...
     # PBKDF2-HMAC-SHA256, 100000 ітерацій, dkLen=64 -> (K_enc, K_mac); кеш за (password, salt)
 def build_replica(records: list[Record], password: str | bytes, *, replica_group_id: int,
                   batch_seq: int, salt: bytes | None = None, nonce: bytes | None = None,
-                  compress: bool = True, class_table: list[int] | None = None) -> bytes: ...
+                  compress: bool = True, no_compression_threshold: float | None = None,
+                  class_table: list[int] | None = None) -> bytes: ...
 def parse_replica(blob: bytes, password: str | bytes) -> Replica: ...
     # порядок: E_SHORT -> E_MAGIC/версія -> E_LENGTH -> HMAC (hmac.compare_digest) -> розшифрування -> payload.
     # Лише Log3Error; жодних інших винятків назовні.
+def as_receiver(password: str | bytes) -> Callable[[bytes], str | None]: ...
+    # адаптер для attack/: receiver(blob) -> None, якщо репліку прийнято, інакше код помилки ("E_HMAC", …)
 ```
 
 ## 5. `log3/recovery.py`, `log3/pipeline.py` — Гліб
@@ -93,7 +114,9 @@ def recover(blobs: list[bytes], password: str | bytes) -> tuple[list[Record], in
 
 @dataclass(frozen=True)
 class Params:
-    window_records: int; no_compression_threshold: float; second_copy_factor: float
+    window_records: int              # розмір вікна реплікації (замість replication_window_records із конфігу)
+    no_compression_threshold: float  # поріг переходу на NO_COMPRESSION, див. build_payload
+    second_copy_factor: float        # коефіцієнт u(2) у планувальнику (замість second_copy_factor із конфігу)
 
 @dataclass(frozen=True)
 class RunResult:
@@ -114,12 +137,13 @@ def solve_dp(util: list[list[float]], cost: list[list[int]], budget: int) -> lis
     # util[i][r], cost[i][r] = r * w_i; максимізує Σ util, Σ cost <= budget; O(n·W·Rmax)
 def solve_greedy(util, cost, budget) -> list[int]: ...     # наступна копія за найбільшим Δutil/Δcost
 def record_weights(records: list[Record], lengths: dict[int, int]) -> list[int]: ...   # w_i = Σ довжин 16 байтів
+    # оцінка для ДП: реальний розмір репліки залежить від таблиці самого batch і накладних витрат
 def utility_table(values: list[float], second_factor: float, third_factor: float) -> list[list[float]]: ...
     # u(0)=0, u(1)=v, u(2)=v*f2, u(3)=v*f3 (коефіцієнти кумулятивні)
-def base_value(cls: int, critical: int, cfg) -> float: ...  # priority(class) + critical_bonus * critical
+def base_value(cls: int, critical: int, cfg: Config) -> float: ...  # priority(class) + critical_bonus * critical
 
 # scheduler.py — вузли й batch
-def plan_window(records: list[Record], classes: list[int], cfg) -> dict[str, list[int]]: ...
+def plan_window(records: list[Record], classes: list[int], cfg: Config) -> dict[str, list[int]]: ...
     # вузол -> індекси записів. Копії одного запису — на РІЗНИХ вузлах (r=2 два вузли, r=3 — A, B, C);
     # на вузол не більше одного batch на вікно; запис у batch не більше одного разу; batch <= max_batch_bytes.
 ```
@@ -144,7 +168,10 @@ def random_search(fitness: Callable[[Params], float], *, evaluations: int, seed:
 
 # attack/
 def ga_recover_key(known_pairs, *, seed: int): ...                      # ключ навмисно слабкого шифру; AES не атакуємо
-def tamper_test(blob: bytes, password, *, trials: int, seed: int) -> dict[str, int]: ...   # скільки змін відхилено з E_HMAC
+def tamper_test(blob: bytes, receiver: Callable[[bytes], str | None], *, trials: int,
+                seed: int) -> dict[str, int]: ...
+    # скільки змін відхилено і з якими кодами. Не імпортує наш parse_replica: на тиждень змагань
+    # той самий тест спрямовують на приймач іншої команди.
 ```
 
 ## Заглушки до готовності чужих модулів
