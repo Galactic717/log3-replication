@@ -13,11 +13,13 @@
 
 ## Команда
 
-| GitHub | Роль |
-| :-- | :-- |
-| [@Galactic717](https://github.com/Galactic717) | голова |
-| [@yaroslavronenko-ux](https://github.com/yaroslavronenko-ux) | учасник |
-| [@artemkovbasuk780-hub](https://github.com/artemkovbasuk780-hub) | учасник |
+| GitHub | Роль | Зони | Завдання |
+| :-- | :-- | :-- | :-- |
+| [@Galactic717](https://github.com/Galactic717) | голова | формат LOG3, захист, відновлення, інтеграція, звіт | [docs/tasks/Galactic717.md](docs/tasks/Galactic717.md) |
+| [@yaroslavronenko-ux](https://github.com/yaroslavronenko-ux) | учасник | Гаффман, ДП, вузли й порядок | [docs/tasks/yaroslavronenko-ux.md](docs/tasks/yaroslavronenko-ux.md) |
+| [@artemkovbasuk780-hub](https://github.com/artemkovbasuk780-hub) | учасник | перцептрон, ГА, модуль атаки | [docs/tasks/artemkovbasuk780-hub.md](docs/tasks/artemkovbasuk780-hub.md) |
+
+Починати з [docs/OVERVIEW.md](docs/OVERVIEW.md), потім [docs/CONTRACTS.md](docs/CONTRACTS.md) і своє завдання. Агентам — [AGENTS.md](AGENTS.md).
 
 ## Гілки
 
@@ -25,16 +27,17 @@
 | :-- | :-- |
 | `main` | стабільна версія; лише через PR із `dev`, перед Чекпоінтами 1–3 |
 | `dev` | інтеграція; сюди ідуть усі PR із гілок зон |
-| `feat/compression` | стиснення: канонічний Гаффман, пакування LOG3 |
-| `feat/dp-replication` | ДП для кількості копій, жадібний baseline і планувальник |
-| `feat/perceptron` | перцептрон: класифікація, ознаки з вікном історії |
-| `feat/security-ga` | PBKDF2/AES/HMAC, генетичний алгоритм, модуль атаки |
-| `feat/integration` | приймання репліки, відновлювач, прогін, звіт |
+| `feat/format-crypto` | Гліб: формат LOG3, приймання репліки, PBKDF2/AES/HMAC |
+| `feat/integration` | Гліб: відновлювач, пайплайн, метрика Q, звіт |
+| `feat/huffman` | Yaroslav: канонічний Гаффман |
+| `feat/planner` | Yaroslav: ДП для кількості копій, жадібний baseline, вузли й batch |
+| `feat/perceptron` | Artem: перцептрон, ознаки з вікном історії |
+| `feat/ga-attack` | Artem: генетичний алгоритм, модуль атаки |
 
 ## Правила роботи
 
 - Кожен комітить зі **свого** акаунта: індивідуальна оцінка спирається на внесок у GitHub.
 - Зміни — гілка зони (або `feat/<зона>-<задача>` від неї) → PR у `dev` → перегляд іншим учасником.
 - `main` завжди запускається; прямих пушів немає.
-- Не комітити те, що викладач не видає студентам (`gen_project3.py`, `teacher/`, `holdout.csv`, `official_eval.json`), а також `.env` і ключі.
+- Пакет викладача (специфікації, дані, `replication.py`, `reference/`) лежить локально в `materials/` і в git не потрапляє. Не комітити також `gen_project3.py`, `teacher/`, `holdout.csv`, `official_eval.json`, `.env` і ключі.
 - Використання ШІ фіксується в `META-USAGE` (обов'язковий артефакт проєкту).
