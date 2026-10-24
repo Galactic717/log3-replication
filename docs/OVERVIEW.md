@@ -68,6 +68,8 @@ C1 рахується тільки за цими 12.
 
 ## Додаткові перевірки D1
 
+D1 — індивідуальна оцінка складності заявленої зони. Рівень фіксується на Зрізі 0 (`docs/DECISIONS.md`); заявляй лише той, що зможеш захистити усно.
+
 | Перевірка | Власник |
 | :-- | :-- |
 | Оптимальні контрольні точки не гірші за фіксований крок | Yaroslav |
@@ -76,6 +78,36 @@ C1 рахується тільки за цими 12.
 | ГА з елітизмом не гірший за покоління 0; порівняння з random search | Artem |
 | Друга/третя копія підвищує R в аварійному сценарії; вартість у бітах виміряна | Yaroslav + Гліб (стенд) |
 | Репліки однієї команди читає відновлювач іншої | Гліб |
+
+## Пакет викладача в `materials/` (локально, не в git)
+
+`FORMAT_SPEC_P3.md`, `REPLICATION_SPEC.md`, `team_config.json`, `replication.py` (чорна скринька, не змінювати), `train.csv`, `valid.csv`, `session.csv`, `session.bin`, `reference/ref_*.bin|json`, `reference/bad_*.bin`, `expected_failures.json`.
+Викладач не видає й у репо не мають потрапляти: `gen_project3.py`, `README_викладачу_P3.md`, `teacher/holdout.csv`, `teacher/official_eval.json`. Відкритий seed — для налагодження, офіційний Q — на п'яти прихованих.
+
+## Обов'язкові артефакти (§10) і таблиці звіту (§12)
+
+Усе згенероване лежить у `results/` і відтворюється `scripts/reproduce.py` (Гліб). Вплив кожного блоку на Q має бути виміряний; відсутність виграшу не помилка, якщо пояснено чому.
+
+| Артефакт | Файл | Власник |
+| :-- | :-- | :-- |
+| Код і тести | `log3/`, `tests/` | кожен у своїй зоні |
+| README запуску, інструкція повного відтворення | `README.md`, `scripts/reproduce.py` | Гліб |
+| Лог рішень | `docs/DECISIONS.md` | усі |
+| META-USAGE | `META-USAGE.md` | усі |
+| Результати C1 | `results/c1.md` (генерується) | Гліб |
+| Журнал і графік ГА | `results/ga_log.csv`, `results/ga_convergence.png` | Artem |
+| Матриця помилок перцептрона | `results/confusion_matrix.md` | Artem |
+| Сценарій атаки | `results/attack.md`, `log3/attack/` | Artem |
+| Таблиця 1: ДП проти жадібного (корисність, біти, час) | `results/tables/01_dp_vs_greedy.md` | Yaroslav |
+| Таблиця 2: вплив 1/2/3 копій (S, R, Q) | `results/tables/02_copies.md` | Yaroslav + Гліб |
+| Таблиця 3: вплив блоків (без перцептрона / без ДП / без ГА / повна) | `results/tables/03_ablation.md` | Гліб |
+| Таблиця 4: стиснення до/після шифрування | `results/tables/04_compress_encrypt.md` | Гліб |
+| Таблиця 5: три сценарії реплікації | `results/tables/05_scenarios.md` | Гліб + Yaroslav |
+| Таблиця 6: збіжність ГА проти випадкового пошуку | `results/tables/06_ga_vs_random.md` | Artem |
+
+## Закладай у дизайн мікрозміни захисту
+
+На захисті змінюють умову: один вузол вдвічі менш надійний; з'являється новий клас подій із вищою цінністю; бюджет реплікації −30 %. Тому жодних зашитих констант — усе з `Config`; кількість класів і вузлів не константи; кожен експеримент перезапускається однією командою. На тижні 12 перевірте це власноруч: змінити конфіг і перегнати.
 
 ## Календар
 
@@ -96,6 +128,8 @@ log3/            records.py payload.py crypto.py replica.py recovery.py pipeline
                  nn/{data,features,mlp,train,classify}.py  ga/{ga,search}.py  attack/ (Artem)
 tests/           test_*.py  (кожен власник — свої файли)
 docs/            OVERVIEW.md CONTRACTS.md DECISIONS.md tasks/
+results/         таблиці, графіки, журнали (генеруються скриптами)
+scripts/         reproduce.py — повне відтворення результатів (Гліб)
 materials/       пакет викладача — локально, у .gitignore
 AGENTS.md  META-USAGE.md  README.md
 ```
