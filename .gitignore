@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Secrets
+.env
+*.key
+
+# Матеріали викладача, які не видаються студентам
+gen_project3.py
+README_викладачу_P3.md
+teacher/
+holdout.csv
+official_eval.json
+
+# Редактори / ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
