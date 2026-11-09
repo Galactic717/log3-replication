@@ -1,0 +1,47 @@
+{
+  "_note": "DEV-ЗАГЛУШКА, не файл викладача. Значення 48/1024/5000/1.55/1.85 і список ознак — з FORMAT_SPEC_P3 та методички; решта вигадані для налагодження. Справжній конфіг — materials/team_config.json (має пріоритет). dev_* — параметри log3/devsim.py, поки нема replication.py.",
+  "replication_window_records": 48,
+  "max_batch_bytes": 1024,
+  "replication_budget_bits": 5000,
+  "priority": [1.0, 3.0, 6.0],
+  "critical_bonus": 4.0,
+  "second_copy_factor": 1.55,
+  "third_copy_factor": 1.85,
+  "reliability_weight": {"A": 0.95, "B": 0.85, "C": 0.7},
+  "alpha": 0.3,
+  "beta": 0.5,
+  "gamma": 0.2,
+  "t_ref": 2.0,
+  "F1_min": 0.6,
+  "temporal_features": ["delta_metric", "events_per_window", "category_changes", "source_changes", "severity_mean"],
+  "password": "log3-dev-password",
+  "c1_degraded_max_unrecovered_critical": 0.10,
+  "c1_time_limit_s": 60,
+  "dev_session": {"records": 960, "seed": 2026},
+  "dev_scenarios": {
+    "normal": {
+      "global_budget_bytes": 200000,
+      "nodes": {
+        "A": {"capacity_bytes": 100000, "p_good_to_bad": 0.0, "mean_burst": 1, "p_fail_bad": 1.0},
+        "B": {"capacity_bytes": 100000, "p_good_to_bad": 0.0, "mean_burst": 1, "p_fail_bad": 1.0},
+        "C": {"capacity_bytes": 100000, "p_good_to_bad": 0.0, "mean_burst": 1, "p_fail_bad": 1.0}
+      }
+    },
+    "degraded": {
+      "global_budget_bytes": 30000,
+      "nodes": {
+        "A": {"capacity_bytes": 14000, "p_good_to_bad": 0.05, "mean_burst": 2, "p_fail_bad": 0.9},
+        "B": {"capacity_bytes": 12000, "p_good_to_bad": 0.10, "mean_burst": 2, "p_fail_bad": 0.9},
+        "C": {"capacity_bytes": 10000, "p_good_to_bad": 0.15, "mean_burst": 3, "p_fail_bad": 0.9}
+      }
+    },
+    "emergency": {
+      "global_budget_bytes": 14000,
+      "nodes": {
+        "A": {"capacity_bytes": 8000, "p_good_to_bad": 0.15, "mean_burst": 4, "p_fail_bad": 1.0},
+        "B": {"capacity_bytes": 6000, "p_good_to_bad": 0.25, "mean_burst": 5, "p_fail_bad": 1.0},
+        "C": {"capacity_bytes": 5000, "p_good_to_bad": 0.35, "mean_burst": 6, "p_fail_bad": 1.0}
+      }
+    }
+  }
+}
