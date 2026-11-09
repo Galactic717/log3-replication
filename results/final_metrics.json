@@ -1,0 +1,261 @@
+{
+  "seeds": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "records": 960,
+  "dev_environment": true,
+  "scenarios": {
+    "normal": {
+      "S": 0.060753725912096955,
+      "R": 1.0,
+      "T": 0.9110152229853561,
+      "Q": 0.7004291623707003,
+      "b_stored": 237464,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.19535809999999856,
+      "R_min": 1.0,
+      "total_critical": 125
+    },
+    "degraded": {
+      "S": 0.060753725912096955,
+      "R": 1.0,
+      "T": 0.91457776443561,
+      "Q": 0.7011416706607511,
+      "b_stored": 237464,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.18681004000001167,
+      "R_min": 1.0,
+      "total_critical": 125
+    },
+    "emergency": {
+      "S": 0.08818666176740768,
+      "R": 0.5216,
+      "T": 0.9207893652096708,
+      "Q": 0.4714138715721565,
+      "b_stored": 158816,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.17209374000000252,
+      "R_min": 0.336,
+      "total_critical": 125
+    }
+  },
+  "dp_vs_greedy": {
+    "dp": {
+      "utility": 2245.149999999999,
+      "bits": 99971,
+      "seconds": 0.04795740000002979
+    },
+    "greedy": {
+      "utility": 2244.699999999999,
+      "bits": 99582,
+      "seconds": 0.020736599999850114
+    },
+    "windows": 20,
+    "dp_strictly_better": 6
+  },
+  "copies": {
+    "degraded/1": {
+      "S": 0.08503476681872536,
+      "R": 0.768,
+      "T": 0.9369955518454531,
+      "Q": 0.5969095404147082,
+      "b_stored": 165272,
+      "copies_assigned": 960,
+      "copies_placed": 960,
+      "replicas_written": 60,
+      "seconds": 0.1344834799999944,
+      "R_min": 0.608,
+      "total_critical": 125
+    },
+    "degraded/2": {
+      "S": 0.060383055005189167,
+      "R": 0.96,
+      "T": 0.923272553711668,
+      "Q": 0.6827694272438903,
+      "b_stored": 239016,
+      "copies_assigned": 1724,
+      "copies_placed": 1724,
+      "replicas_written": 60,
+      "seconds": 0.16621023999999807,
+      "R_min": 0.872,
+      "total_critical": 125
+    },
+    "degraded/3": {
+      "S": 0.060753725912096955,
+      "R": 1.0,
+      "T": 0.9172637872820795,
+      "Q": 0.701678875230045,
+      "b_stored": 237464,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.18040069999999558,
+      "R_min": 1.0,
+      "total_critical": 125
+    },
+    "emergency/1": {
+      "S": 0.08765122118237845,
+      "R": 0.5168,
+      "T": 0.939039938974983,
+      "Q": 0.4725033541497101,
+      "b_stored": 159880,
+      "copies_assigned": 960,
+      "copies_placed": 960,
+      "replicas_written": 60,
+      "seconds": 0.12983533999999963,
+      "R_min": 0.256,
+      "total_critical": 125
+    },
+    "emergency/2": {
+      "S": 0.08786381109280615,
+      "R": 0.4544,
+      "T": 0.9266371261436313,
+      "Q": 0.43888656855656805,
+      "b_stored": 159456,
+      "copies_assigned": 1724,
+      "copies_placed": 1724,
+      "replicas_written": 60,
+      "seconds": 0.15835554000001367,
+      "R_min": 0.144,
+      "total_critical": 125
+    },
+    "emergency/3": {
+      "S": 0.08818666176740768,
+      "R": 0.5216,
+      "T": 0.9195807620535292,
+      "Q": 0.4711721509409281,
+      "b_stored": 158816,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.17492052000001196,
+      "R_min": 0.336,
+      "total_critical": 125
+    }
+  },
+  "ablation": {
+    "degraded/повна система": {
+      "S": 0.060753725912096955,
+      "R": 1.0,
+      "T": 0.9146204635281575,
+      "Q": 0.7011502104792605,
+      "b_stored": 237464,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.1867106599999829,
+      "R_min": 1.0,
+      "total_critical": 125
+    },
+    "degraded/без перцептрона": {
+      "S": 0.060753725912096955,
+      "R": 1.0,
+      "T": 0.9168149958358733,
+      "Q": 0.7015891169408037,
+      "b_stored": 237464,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.18147072000000436,
+      "R_min": 1.0,
+      "total_critical": 125
+    },
+    "degraded/без ДП (жадібний)": {
+      "S": 0.06086350091929246,
+      "R": 1.0,
+      "T": 0.929883729072326,
+      "Q": 0.704235796090253,
+      "b_stored": 237008,
+      "copies_assigned": 1709,
+      "copies_placed": 1709,
+      "replicas_written": 60,
+      "seconds": 0.15080872000000908,
+      "R_min": 1.0,
+      "total_critical": 125
+    },
+    "degraded/без стиснення": {
+      "S": 0.0972644376899696,
+      "R": 0.9584,
+      "T": 0.9366808899356885,
+      "Q": 0.6957155092941286,
+      "b_stored": 142560,
+      "copies_assigned": 780,
+      "copies_placed": 780,
+      "replicas_written": 60,
+      "seconds": 0.13521405999999841,
+      "R_min": 0.856,
+      "total_critical": 125
+    },
+    "emergency/повна система": {
+      "S": 0.08818666176740768,
+      "R": 0.5216,
+      "T": 0.921794797093415,
+      "Q": 0.4716149579489053,
+      "b_stored": 158816,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.16969313999999258,
+      "R_min": 0.336,
+      "total_critical": 125
+    },
+    "emergency/без перцептрона": {
+      "S": 0.08818666176740768,
+      "R": 0.5216,
+      "T": 0.9216459481785171,
+      "Q": 0.4715851881659257,
+      "b_stored": 158816,
+      "copies_assigned": 1715,
+      "copies_placed": 1715,
+      "replicas_written": 60,
+      "seconds": 0.1700466200000051,
+      "R_min": 0.336,
+      "total_critical": 125
+    },
+    "emergency/без ДП (жадібний)": {
+      "S": 0.08830428183783287,
+      "R": 0.5216,
+      "T": 0.9345978643983545,
+      "Q": 0.47421085743102076,
+      "b_stored": 158584,
+      "copies_assigned": 1709,
+      "copies_placed": 1709,
+      "replicas_written": 60,
+      "seconds": 0.13996991999998726,
+      "R_min": 0.336,
+      "total_critical": 125
+    },
+    "emergency/без стиснення": {
+      "S": 0.0972644376899696,
+      "R": 0.7552,
+      "T": 0.9385556960910794,
+      "Q": 0.5944904705252068,
+      "b_stored": 142560,
+      "copies_assigned": 780,
+      "copies_placed": 780,
+      "replicas_written": 60,
+      "seconds": 0.13093416000001526,
+      "R_min": 0.568,
+      "total_critical": 125
+    }
+  },
+  "compress_encrypt": {
+    "raw_bytes": 15360,
+    "huffman_payload": 8323,
+    "compress_then_encrypt": 8398,
+    "encrypt_only": 15449,
+    "encrypt_then_huffman": 15975,
+    "zlib_raw": 6774,
+    "zlib_ciphertext": 15385
+  }
+}
