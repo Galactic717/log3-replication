@@ -66,8 +66,8 @@ python scripts/reproduce.py                 # відтворює results/ (C1, �
 | `log3/payload.py` | payload LOG3, NO_COMPRESSION, строгий розбір | Гліб |
 | `log3/crypto.py`, `log3/replica.py` | PBKDF2, AES-256-CTR, HMAC; репліка й приймання за §5 | Гліб |
 | `log3/recovery.py`, `log3/pipeline.py` | відновлення з дедуплікацією; наскрізний прогін і Q | Гліб |
-| `log3/huffman.py` | канонічний Гаффман *(тимчасова версія голови)* | Yaroslav |
-| `log3/planner/` | ДП, жадібний baseline, вузли й batch *(тимчасова версія голови)* | Yaroslav |
-| `log3/nn/` | перцептрон *(зараз заглушка: усе класу 0)* | Artem |
+| `log3/huffman.py` | канонічний Гаффман | Гліб |
+| `log3/planner/` | ДП, жадібний baseline, вузли й batch | Гліб |
+| `log3/nn/` | перцептрон *(зараз заглушка: усе класу 0)* | — |
 | `log3/devsim.py` | dev-заміна `replication.py`, поки нема пакета | Гліб |
 | `scripts/reproduce.py` | усе в `results/` однією командою | Гліб |

@@ -60,12 +60,12 @@ Python 3.11, `numpy` (векторний рядок ДП), `cryptography` (AES),
 
 Таблиці генеруються автоматично:
 
-1. ДП проти жадібного — `results/tables/01_dp_vs_greedy.md` *(Yaroslav)*
+1. ДП проти жадібного — `results/tables/01_dp_vs_greedy.md`
 2. Вплив 1/2/3 копій — `results/tables/02_copies.md`
 3. Вплив блоків — `results/tables/03_ablation.md`
 4. Стиснення до/після шифрування — `results/tables/04_compress_encrypt.md`
 5. Три сценарії — `results/tables/05_scenarios.md`
-6. ГА проти випадкового пошуку — `results/tables/06_ga_vs_random.md` *(Artem)*
+6. ГА проти випадкового пошуку — `results/tables/06_ga_vs_random.md` *(після ГА)*
 
 Попередні висновки (dev-середовище, перевірити на `replication.py`):
 

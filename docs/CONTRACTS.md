@@ -203,7 +203,7 @@ def tamper_test(blob: bytes, receiver: Callable[[bytes], str | None], *, trials:
 
 ## Заглушки до готовності чужих модулів
 
-Стан на 2026-11-09: `huffman.py` і `planner/` уже мають тимчасову реалізацію голови за цим контрактом, `classify_records` — заглушка «усі класу 0», а пайплайн іде на `log3/devsim.py`, поки нема `materials/replication.py`. Див. `DECISIONS.md`.
+Стан на 2026-11-09: `huffman.py` і `planner/` реалізовано головою за цим контрактом, `classify_records` — заглушка «усі класу 0», а пайплайн іде на `log3/devsim.py`, поки нема `materials/replication.py`. Див. `DECISIONS.md`.
 
 | Чого немає | Заглушка |
 | :-- | :-- |

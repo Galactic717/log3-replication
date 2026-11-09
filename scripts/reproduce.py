@@ -1,6 +1,7 @@
 """Повне відтворення results/ однією командою:  python scripts/reproduce.py
 
   results/c1.md                       статус 12 приймальних кейсів C1 (з прогону pytest)
+  results/tables/01_dp_vs_greedy.md   ДП проти жадібного: корисність, біти, час
   results/tables/02_copies.md         вплив max 1/2/3 копій: S, R, Q, біти
   results/tables/03_ablation.md       без перцептрона / без ДП / без ГА / повна система
   results/tables/04_compress_encrypt.md  стиснення до і після шифрування
@@ -29,6 +30,9 @@ from log3 import huffman  # noqa: E402
 from log3.config import MATERIALS_CONFIG, load_config  # noqa: E402
 from log3.payload import build_payload  # noqa: E402
 from log3.pipeline import SCENARIOS, load_session, run  # noqa: E402
+from log3.nn.classify import classify_records  # noqa: E402
+from log3.planner.knapsack import solve_dp, solve_greedy, total  # noqa: E402
+from log3.planner.scheduler import choose_copies  # noqa: E402
 from log3.records import pack_records  # noqa: E402
 from log3.replica import build_replica  # noqa: E402
 
@@ -40,9 +44,9 @@ C1 = [  # (№, кейс, власник)
     (1, "Один запис кодується й відновлюється побайтово", "Гліб"),
     (2, "Порожній журнал не валить систему", "Гліб"),
     (3, "NO_COMPRESSION відновлює сирі записи точно", "Гліб"),
-    (4, "Канонічні коди відновлюються лише з довжин", "Yaroslav"),
-    (5, "Вироджений алфавіт має код довжини 1", "Yaroslav"),
-    (6, "Корисність ДП ≥ жадібного на всіх виданих наборах", "Yaroslav"),
+    (4, "Канонічні коди відновлюються лише з довжин", "Гліб"),
+    (5, "Вироджений алфавіт має код довжини 1", "Гліб"),
+    (6, "Корисність ДП ≥ жадібного на всіх виданих наборах", "Гліб"),
     (7, "Штатний сценарій: відновлено всі критичні", "Гліб"),
     (8, "Деградований: частка невідновлених критичних ≤ порогу", "Гліб"),
     (9, "Перцептрон: macro-F1 ≥ F1_min на holdout", "Artem"),
@@ -95,7 +99,7 @@ def c1_status() -> str:
     rows = []
     for n, title, owner in C1:
         got = status.get(n)
-        verdict = ("нема тесту (зона не здана)" if not got else
+        verdict = ("нема тесту (перцептрон не реалізовано)" if not got else
                    "НЕ ПРОЙДЕНО" if "НЕ ПРОЙДЕНО" in got else got[0])
         rows.append([n, title, owner, verdict])
     return table("Приймальні кейси C1", ["№", "Кейс", "Власник", "Статус"], rows,
@@ -142,6 +146,39 @@ def build_payload_like(data: bytes) -> bytes:
     return bytes(14 + 2 * len(lengths)) + huffman.encode(data, lengths)
 
 
+def dp_vs_greedy(cfg, records) -> tuple[str, dict]:
+    """Ті самі вікна, ваги й цінності; різниться лише розв'язувач рюкзака."""
+    import time
+    classes = classify_records(records)
+    W = cfg.replication_window_records
+    agg = {"dp": [0.0, 0, 0.0], "greedy": [0.0, 0, 0.0]}   # корисність, біти, секунди
+    better = windows = 0
+    for lo in range(0, len(records), W):
+        win, cls = records[lo:lo + W], classes[lo:lo + W]
+        _, _, weights, values = choose_copies(win, cls, cfg)
+        util = [[0.0, v, v * cfg.second_copy_factor, v * cfg.third_copy_factor] for v in values]
+        cost = [[r * w for r in range(4)] for w in weights]
+        got = {}
+        for name, solve in (("dp", solve_dp), ("greedy", solve_greedy)):
+            t0 = time.perf_counter()
+            copies = solve(util, cost, cfg.replication_budget_bits)
+            dt = time.perf_counter() - t0
+            u, c = total(util, cost, copies)
+            agg[name][0] += u
+            agg[name][1] += c
+            agg[name][2] += dt
+            got[name] = u
+        windows += 1
+        better += got["dp"] > got["greedy"] + 1e-9
+    rows = [[n, a[0], a[1], a[2]] for n, a in agg.items()]
+    note = (f"Сума за {windows} вікнами сеансу по {W} записів, бюджет вікна W = "
+            f"{cfg.replication_budget_bits} біт. ДП строго кращий за жадібний у {better} вікнах; "
+            "у решті рівний. Контрприклад для жадібного — tests/test_knapsack.py::test_greedy_counterexample.")
+    data = {k: {"utility": a[0], "bits": a[1], "seconds": a[2]} for k, a in agg.items()}
+    data["windows"], data["dp_strictly_better"] = windows, better
+    return table("ДП проти жадібного", ["Алгоритм", "Σ корисність", "Σ біти", "Σ час, с"], rows, note), data
+
+
 def main() -> None:
     TABLES.mkdir(parents=True, exist_ok=True)
     cfg = load_config()
@@ -160,6 +197,9 @@ def main() -> None:
         "Поведінка у трьох сценаріях реплікації",
         ["Сценарій", "S", "R", "R min", "T", "Q", "B_stored, біт", "копій розміщено/призначено", "t, с"],
         rows, f"Критичних подій у сеансі: {scen['normal']['total_critical']}."), encoding="utf-8")
+
+    text, out["dp_vs_greedy"] = dp_vs_greedy(cfg, records)
+    (TABLES / "01_dp_vs_greedy.md").write_text(text, encoding="utf-8")
 
     copies = {f"{s}/{cap}": avg_runs(s, cfg, records, copies_cap=cap)
               for s in ("degraded", "emergency") for cap in (1, 2, 3)}
@@ -181,7 +221,7 @@ def main() -> None:
     (TABLES / "03_ablation.md").write_text(table(
         "Вплив блоків", ["Сценарій", "Варіант", "S", "R", "Q"], rows,
         "Перцептрон поки заглушка (усі події класу 0), тож «без перцептрона» = повна система. "
-        "Рядок «без ГА» з'явиться, коли ГА (Artem) видасть параметри: зараз повна система "
+        "Рядок «без ГА» з'явиться, коли ГА видасть параметри: зараз повна система "
         "працює на параметрах з конфігу, тобто це і є «без ГА»."), encoding="utf-8")
 
     text, out["compress_encrypt"] = compress_encrypt(cfg, records)
