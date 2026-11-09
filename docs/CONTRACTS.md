@@ -11,13 +11,21 @@
 ```python
 @dataclass(frozen=True)
 class Config:
-    ...  # поля 1:1 з team_config.json: replication_window_records, max_batch_bytes, replication_budget_bits,
-         # priority за класами, critical_bonus, second_copy_factor, third_copy_factor,
-         # reliability_weight вузлів, alpha/beta/gamma, F1_min, мінімальний набір часових ознак
-def load_config(path: str = "materials/team_config.json") -> Config: ...
+    replication_window_records: int; max_batch_bytes: int; replication_budget_bits: int
+    priority: tuple[float, ...]            # за класом; n_classes = len(priority)
+    critical_bonus: float; second_copy_factor: float; third_copy_factor: float
+    reliability_weight: dict[str, float]   # вузол -> надійність; nodes = list(reliability_weight)
+    alpha: float; beta: float; gamma: float
+    t_ref: float = 1.0; F1_min: float | None = None; temporal_features: tuple[str, ...] = ()
+    password: str = "log3-dev"
+    raw: dict                              # увесь JSON як є (невідомі ключі не губляться)
+def load_config(path=None) -> Config: ...
+    # path=None: $LOG3_CONFIG -> materials/team_config.json -> config/team_config.dev.json (з попередженням)
+def config_from_dict(d: dict) -> Config: ...   # priority — список або {"0": .., "1": ..};
+    # вузли — "reliability_weight": {...} або "nodes": {"A": {"reliability_weight": ..}}
 ```
 
-Гліб на тижні 1 звіряє назви полів із реальним файлом і оновлює цей розділ. Кількість класів і вузлів — не константи (`len(cfg.priority)`, вузли з конфігу).
+Мікрозміни на захисті: `dataclasses.replace(cfg, replication_budget_bits=...)` або правка JSON. **Назви ключів звірити з реальним `team_config.json`** — поки взято з FORMAT_SPEC §3.5 і методички. Кількість класів і вузлів — не константи (`cfg.n_classes`, `cfg.nodes`).
 
 ## 1. `log3/records.py` — Гліб
 
@@ -61,7 +69,8 @@ def encoded_bits(data: bytes, lengths: dict[int, int]) -> int: ...         # д�
 ## 3. `log3/payload.py` — Гліб
 
 ```python
-class PayloadError(ValueError): ...                            # → E_PAYLOAD
+class PayloadError(ValueError):
+    code: str   # "E_PAYLOAD" або "E_CODE" (некоректна таблиця кодів), див. DECISIONS
 
 @dataclass(frozen=True)
 class ParsedPayload:
@@ -71,9 +80,14 @@ class ParsedPayload:
 
 def build_payload(records: list[Record], *, compress: bool = True,
                   no_compression_threshold: float | None = None,
-                  class_table: list[int] | None = None) -> bytes: ...
+                  class_table: list[int] | None = None,
+                  lengths: dict[int, int] | None = None) -> bytes: ...
     # поріг: якщо len(стиснене) > поріг * len(сирого) — писати сирі байти з прапорцем NO_COMPRESSION
     # (таблиця Гаффмана коштує 2*table_nsym байтів, для малих batch сирі байти можуть бути коротшими)
+    # lengths — таблиця всього вікна (FORMAT_SPEC §3.5); None — побудувати з самих records
+def payload_size(n_records: int, nsym: int, bits: int, *, compress: bool = True,
+                 no_compression_threshold: float | None = None) -> int: ...
+    # точний розмір payload, який обере build_payload (те саме правило) — для розміру batch
 def parse_payload(payload: bytes) -> ParsedPayload: ...
     # інваріант symbol_count == 16 * record_count; reserved == 0; flags bits 4-7 == 0;
     # невідоме розширення (bit0/bit1) -> PayloadError; class_table лише за flag bit2, значення 0..2.
@@ -98,7 +112,10 @@ def derive_keys(password: str | bytes, salt: bytes) -> tuple[bytes, bytes]: ...
 def build_replica(records: list[Record], password: str | bytes, *, replica_group_id: int,
                   batch_seq: int, salt: bytes | None = None, nonce: bytes | None = None,
                   compress: bool = True, no_compression_threshold: float | None = None,
-                  class_table: list[int] | None = None) -> bytes: ...
+                  class_table: list[int] | None = None,
+                  lengths: dict[int, int] | None = None) -> bytes: ...
+def seal_payload(payload: bytes, password, *, replica_group_id, batch_seq, salt=None, nonce=None) -> bytes: ...
+    # готовий payload -> репліка (для negative-тестів і атаки)
 def parse_replica(blob: bytes, password: str | bytes) -> Replica: ...
     # порядок: E_SHORT -> E_MAGIC/версія -> E_LENGTH -> HMAC (hmac.compare_digest) -> розшифрування -> payload.
     # Лише Log3Error; жодних інших винятків назовні.
@@ -122,11 +139,17 @@ class Params:
 class RunResult:
     S: float; R: float; T: float; Q: float
     b_ref: int; b_stored: int; recovered_critical: int; total_critical: int; seconds: float
+    copies_assigned: int = 0; copies_placed: int = 0     # призначено ДП / реально розміщено
+    replicas_written: int = 0; replicas_rejected: int = 0
 
 def run(scenario: str, seed: int, params: Params | None = None, *, use_nn: bool = True,
-        use_dp: bool = True, copies_cap: int = 3, compress: bool = True) -> RunResult: ...
+        use_dp: bool = True, copies_cap: int = 3, compress: bool = True,
+        cfg: Config | None = None, records: list[Record] | None = None) -> RunResult: ...
     # scenario: "normal" | "degraded" | "emergency"; перемикачі потрібні для абляцій у звіті
-def evaluate(params: Params, seed: int) -> float: ...      # Q — фітнес для ГА
+def default_params(cfg: Config) -> Params: ...             # параметри «без ГА» — з конфігу
+def evaluate(params: Params, seed: int, *, scenario: str = "degraded", n_seeds: int = 3,
+             cfg: Config | None = None) -> float: ...
+    # фітнес для ГА: середній Q за seeds seed..seed+n_seeds-1; некоректні параметри -> 0.0
 ```
 
 ## 6. `log3/planner/` — Yaroslav
@@ -143,9 +166,13 @@ def utility_table(values: list[float], second_factor: float, third_factor: float
 def base_value(cls: int, critical: int, cfg: Config) -> float: ...  # priority(class) + critical_bonus * critical
 
 # scheduler.py — вузли й batch
-def plan_window(records: list[Record], classes: list[int], cfg: Config) -> dict[str, list[int]]: ...
+def plan_window(records: list[Record], classes: list[int], cfg: Config, **kw) -> dict[str, list[int]]: ...
     # вузол -> індекси записів. Копії одного запису — на РІЗНИХ вузлах (r=2 два вузли, r=3 — A, B, C);
     # на вузол не більше одного batch на вікно; запис у batch не більше одного разу; batch <= max_batch_bytes.
+    # kw: use_dp, copies_cap, second_copy_factor, compress, no_compression_threshold (для абляцій і ГА)
+def plan(records, classes, cfg, **kw) -> WindowPlan: ...
+    # WindowPlan(batches, copies, placed, lengths): те саме + r_i від ДП, реально розміщені копії
+    # і таблиця Гаффмана вікна — її пайплайн пише в кожну репліку вікна
 ```
 
 ## 7. `log3/nn/`, `log3/ga/`, `log3/attack/` — Artem
@@ -175,6 +202,8 @@ def tamper_test(blob: bytes, receiver: Callable[[bytes], str | None], *, trials:
 ```
 
 ## Заглушки до готовності чужих модулів
+
+Стан на 2026-11-09: `huffman.py` і `planner/` уже мають тимчасову реалізацію голови за цим контрактом, `classify_records` — заглушка «усі класу 0», а пайплайн іде на `log3/devsim.py`, поки нема `materials/replication.py`. Див. `DECISIONS.md`.
 
 | Чого немає | Заглушка |
 | :-- | :-- |
