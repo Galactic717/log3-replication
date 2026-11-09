@@ -49,13 +49,23 @@ class ParsedPayload:
     flags: int
 
 
-def payload_size(n_records: int, lengths: dict[int, int] | None, bits: int | None,
-                 *, class_table: bool = False) -> int:
-    """Розмір payload у байтах: стиснений (lengths, bits) або сирий (lengths=None)."""
-    tail = n_records if class_table else 0
-    if lengths is None:
-        return OVERHEAD + RECORD_SIZE * n_records + tail
-    return OVERHEAD + 2 * len(lengths) + (bits + 7) // 8 + tail
+def payload_size(n_records: int, nsym: int, bits: int, *, compress: bool = True,
+                 no_compression_threshold: float | None = None) -> int:
+    """Точний розмір payload (без class_table), який обере build_payload.
+
+    nsym — кількість символів таблиці, bits — сума довжин кодів усіх байтів записів.
+    Планувальник рахує розмір batch цією ж функцією, тож оцінка = факт.
+    """
+    raw = OVERHEAD + RECORD_SIZE * n_records
+    if not (compress and n_records):
+        return raw
+    packed = OVERHEAD + 2 * nsym + (bits + 7) // 8
+    return packed if _use_compressed(packed, raw, no_compression_threshold) else raw
+
+
+def _use_compressed(packed: int, raw: int, threshold: float | None) -> bool:
+    """Єдине правило вибору NO_COMPRESSION для build_payload і payload_size."""
+    return packed <= (1.0 if threshold is None else threshold) * raw
 
 
 def build_payload(records: list[Record], *, compress: bool = True,
@@ -85,8 +95,7 @@ def build_payload(records: list[Record], *, compress: bool = True,
         table = lengths if lengths is not None else huffman.code_lengths(raw)
         stream = huffman.encode(raw, table)
         packed = OVERHEAD + 2 * len(table) + len(stream)
-        threshold = 1.0 if no_compression_threshold is None else no_compression_threshold
-        if packed <= threshold * (OVERHEAD + len(raw)):
+        if _use_compressed(packed, OVERHEAD + len(raw), no_compression_threshold):
             pairs = b"".join(bytes((s, table[s])) for s in sorted(table))
             return (_HEAD.pack(n, flags, 0, len(table)) + pairs
                     + _MID.pack(len(raw), len(stream)) + stream + tail)
