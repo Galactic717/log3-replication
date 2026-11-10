@@ -2,8 +2,7 @@ import random
 
 import pytest
 
-from log3.huffman import HuffmanError, canonical_codes, code_lengths
-
+from log3.huffman import HuffmanError, canonical_codes, code_lengths, decode, encode, encoded_bits
 
 def test_empty_and_single_symbol():
     assert code_lengths(b"") == {}
@@ -42,3 +41,46 @@ def test_code_lengths_is_deterministic():
 def test_bad_tables(lengths):
     with pytest.raises(HuffmanError):
         canonical_codes(lengths)
+
+def test_c1_04_canonical_from_lengths():
+    data = b"abracadabra, canonical huffman" * 3
+    lengths = code_lengths(data)
+    stream = encode(data, lengths)
+    # приймач має лише довжини — і відновлює ті самі коди
+    assert decode(stream, dict(lengths), len(data)) == data
+    assert canonical_codes(lengths) == canonical_codes(dict(sorted(lengths.items())))
+
+
+def test_c1_05_degenerate_alphabet():
+    data = b"\x01" * 16
+    assert code_lengths(data) == {1: 1}
+    assert canonical_codes({1: 1}) == {1: (0, 1)}
+    assert encode(data, {1: 1}) == b"\x00\x00"
+    assert decode(b"\x00\x00", {1: 1}, 16) == data
+
+
+def test_empty_round_trip():
+    assert encode(b"", {}) == b""
+    assert decode(b"", {}, 0) == b""
+
+
+def test_random_round_trip():
+    rng = random.Random(1)
+    for _ in range(50):
+        data = bytes(rng.choice(range(rng.randint(1, 256))) for _ in range(rng.randint(1, 400)))
+        lengths = code_lengths(data)
+        stream = encode(data, lengths)
+        assert len(stream) == (encoded_bits(data, lengths) + 7) // 8
+        assert decode(stream, lengths, len(data)) == data
+
+
+def test_decode_errors():
+    lengths = {0: 1, 1: 1}
+    with pytest.raises(HuffmanError):
+        decode(b"\x00", lengths, 9)          # потік обрізаний
+    with pytest.raises(HuffmanError):
+        decode(b"\x00\x00", lengths, 8)      # зайвий повний байт
+    with pytest.raises(HuffmanError):
+        decode(b"\x01", lengths, 7)          # ненульовий padding
+    with pytest.raises(HuffmanError):
+        encode(b"\x05", lengths)             # символу немає в таблиці
