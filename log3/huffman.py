@@ -37,8 +37,33 @@ def code_lengths(data: bytes, max_len: int = MAX_LEN) -> dict[int, int]:
         else:
             stack.append((node[0], depth + 1))
             stack.append((node[1], depth + 1))
+    if max(lengths.values()) > max_len:             # дерево надто глибоке — будуємо обмежене
+        lengths = _package_merge(freq, max_len)
     return lengths
 
+def _package_merge(freq: dict[int, int], max_len: int) -> dict[int, int]:
+    """Оптимальні довжини кодів не довші за max_len (алгоритм package-merge).
+
+    Кожен символ — «монета» вагою freq. На кожному з max_len рівнів сусідні
+    пари найлегших елементів склеюються в «пакети», які додаються до монет.
+    З підсумкового списку беремо 2n-2 найлегших елементів; довжина коду
+    символу — скільки разів він у них зустрівся.
+    """
+    syms = sorted(freq, key=lambda s: (freq[s], s))      # детермінований порядок
+    n = len(syms)
+    if n > 1 << max_len:
+        raise HuffmanError(f"{n} символів не вміщаються в коди довжиною до {max_len}")
+    leaves = [(freq[s], (s,)) for s in syms]
+    cur = leaves
+    for _ in range(max_len - 1):
+        packages = [(cur[i][0] + cur[i + 1][0], cur[i][1] + cur[i + 1][1])
+                    for i in range(0, len(cur) - 1, 2)]
+        cur = sorted(leaves + packages, key=lambda item: item[0])
+    lengths: dict[int, int] = {}
+    for _, members in cur[:2 * n - 2]:
+        for s in members:
+            lengths[s] = lengths.get(s, 0) + 1
+    return lengths
 
 def check_lengths(lengths: dict[int, int]) -> None:
     """HuffmanError, якщо таблиця не задає коректний канонічний код."""
