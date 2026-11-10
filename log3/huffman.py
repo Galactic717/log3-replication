@@ -73,3 +73,55 @@ def canonical_codes(lengths: dict[int, int]) -> dict[int, tuple[int, int]]:
         codes[s] = (next_code[n], n)
         next_code[n] += 1
     return codes
+
+def encode(data: bytes, lengths: dict[int, int]) -> bytes:
+    """Стискає data. Біти йдуть від старшого до молодшого, останній байт добиваємо нулями."""
+    codes = canonical_codes(lengths)
+    bits = []
+    for b in data:
+        if b not in codes:
+            raise HuffmanError(f"символу {b} немає в таблиці")
+        code, n = codes[b]
+        bits.append(format(code, f"0{n}b"))
+    stream = "".join(bits)
+    if not stream:
+        return b""
+    stream += "0" * (-len(stream) % 8)               # padding нулями до цілого байта
+    return int(stream, 2).to_bytes(len(stream) // 8, "big")
+
+
+def decode(bitstream: bytes, lengths: dict[int, int], symbol_count: int) -> bytes:
+    """Розпаковує рівно symbol_count символів. Будь-яка вада потоку — HuffmanError."""
+    codes = canonical_codes(lengths)
+    if symbol_count == 0:
+        if bitstream:
+            raise HuffmanError("зайві байти після порожніх даних")
+        return b""
+    if not codes:
+        raise HuffmanError("порожня таблиця, а символи очікуються")
+    by_code = {(n, c): s for s, (c, n) in codes.items()}   # (довжина, код) -> символ
+    bits = "".join(format(byte, "08b") for byte in bitstream)
+    out = bytearray()
+    pos = 0                                           # скільки бітів вже прочитано
+    code = n = 0                                      # код, що зараз складаємо, і його довжина
+    while len(out) < symbol_count:
+        if pos >= len(bits):
+            raise HuffmanError("потік обрізаний")
+        code = (code << 1) | int(bits[pos])
+        pos += 1
+        n += 1
+        if (n, code) in by_code:
+            out.append(by_code[(n, code)])
+            code = n = 0
+        elif n >= MAX_LEN:
+            raise HuffmanError("такого коду немає в таблиці")
+    if (pos + 7) // 8 != len(bitstream):
+        raise HuffmanError("зайвий байт після закодованих даних")
+    if "1" in bits[pos:]:
+        raise HuffmanError("padding має складатися з нулів")
+    return bytes(out)
+
+
+def encoded_bits(data: bytes, lengths: dict[int, int]) -> int:
+    """Скільки бітів займуть дані (без padding). Це вага запису для ДП."""
+    return sum(lengths[b] for b in data)
