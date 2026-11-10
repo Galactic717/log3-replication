@@ -1,14 +1,7 @@
-"""Багатоваріантний рюкзак r_i ∈ {0..Rmax} (FORMAT_SPEC_P3 §3.5, контракт docs/CONTRACTS.md §6).
+"""Багатоваріантний рюкзак: скільки копій r_i ∈ {0..3} дати кожному запису вікна.
 
-Модуль реалізував голова (Galactic717) для наскрізного пайплайна (C1 №6, №7, №8);
-сигнатури — з контракту.
-
-    maximize Σ u_i(r_i)  subject to  Σ r_i·w_i ≤ W,
-    u_i(0)=0, u_i(1)=v_i, u_i(2)=v_i·f2, u_i(3)=v_i·f3   (factors кумулятивні)
-
-ДП: dp[c] — найбільша корисність перших i подій, якщо витрачено не більше c бітів.
-Перехід dp_i[c] = max_r (dp_{i-1}[c - cost_i(r)] + u_i(r)); час O(n·W·Rmax), пам'ять
-O(n·W) байтів на відновлення вибору. Рядок по c рахується векторно numpy.
+Задача:  максимізувати Σ util[i][r_i]  за умови  Σ cost[i][r_i] <= budget.
+util[i][r] — корисність r копій запису i, cost[i][r] — скільки бітів вони займуть.
 """
 from __future__ import annotations
 
@@ -19,69 +12,54 @@ from ..records import Record, pack_record
 
 
 def base_value(cls: int, critical: int, cfg: Config) -> float:
+    """Цінність запису: пріоритет його класу плюс бонус, якщо запис критичний."""
     return cfg.priority[cls] + cfg.critical_bonus * critical
 
 
 def utility_table(values: list[float], second_factor: float, third_factor: float) -> list[list[float]]:
+    """Для кожного запису: [u(0), u(1), u(2), u(3)] = [0, v, v*f2, v*f3]."""
     return [[0.0, v, v * second_factor, v * third_factor] for v in values]
 
 
 def record_weights(records: list[Record], lengths: dict[int, int]) -> list[int]:
-    """w_i = Σ length(byte) по 16 байтах запису — біти однієї стисненої копії
-    з таблицею вікна (накладні витрати batch сюди не входять, це оцінка)."""
+    """Вага запису w_i: скільки бітів займуть його 16 байтів після стиснення таблицею вікна."""
     return [sum(lengths[b] for b in pack_record(r)) for r in records]
 
 
 def solve_dp(util: list[list[float]], cost: list[list[int]], budget: int) -> list[int]:
+    """Оптимальна кількість копій кожного запису (динамічне програмування).
+
+    best[c] — найбільша корисність уже розглянутих записів, якщо витрачено не більше c бітів.
+    Для кожного запису i перебираємо r = 0..Rmax:  new[c] = max_r (best[c - cost[i][r]] + util[i][r]).
+    choice[i][c] запам'ятовує найкраще r, щоб потім пройти назад і відновити відповідь.
+    Цикл по c зроблено зсувом масиву numpy: це ті самі обчислення, лише в ~15 разів швидше.
+    Час O(n · budget · Rmax), пам'ять O(n · budget).
+    """
     W = max(int(budget), 0)
-    dp = np.zeros(W + 1)
+    best = np.zeros(W + 1)                   # до першого запису: корисність 0 за будь-якого бюджету
     choice = np.zeros((len(util), W + 1), dtype=np.int8)
     for i, (u, c) in enumerate(zip(util, cost)):
-        best = dp.copy()                       # r = 0
-        arg = choice[i]
+        new = best.copy()                    # варіант r = 0: запис не копіюємо
         for r in range(1, len(u)):
-            if c[r] > W:
+            cr = c[r]
+            if cr > W:                       # r копій не влазять навіть у весь бюджет
                 continue
+            # cand[c] = best[c - cr] + u[r] для всіх c >= cr одразу; менші c — неможливо
             cand = np.full(W + 1, -np.inf)
-            cand[c[r]:] = dp[:W + 1 - c[r]] + u[r]
-            better = cand > best               # строго: за рівності — менше копій
-            best[better] = cand[better]
-            arg[better] = r
-        dp = best
+            cand[cr:] = best[:W + 1 - cr] + u[r]
+            better = cand > new              # строго більше: за рівності лишаємо менше копій
+            new[better] = cand[better]
+            choice[i][better] = r
+        best = new
     copies = [0] * len(util)
-    w = W
+    left = W                                 # ідемо від останнього запису до першого
     for i in range(len(util) - 1, -1, -1):
-        r = int(choice[i, w])
+        r = int(choice[i][left])
         copies[i] = r
-        w -= cost[i][r]
+        left -= cost[i][r]
     return copies
 
 
-def solve_greedy(util: list[list[float]], cost: list[list[int]], budget: int) -> list[int]:
-    """Щоразу додає наступну копію з найбільшим Δu/Δcost, що ще влазить у бюджет.
-    Без гарантії оптимуму: локально вигідні копії можуть зайняти місце вигіднішої комбінації."""
-    copies = [0] * len(util)
-    spent = 0
-    while True:
-        best, best_key = None, None
-        for i, (u, c) in enumerate(zip(util, cost)):
-            r = copies[i]
-            if r + 1 >= len(u):
-                continue
-            dc = c[r + 1] - c[r]
-            if spent + dc > budget:
-                continue
-            ratio = (u[r + 1] - u[r]) / dc if dc else float("inf")
-            key = (ratio, -i)                  # детермінований tie-break: менший індекс
-            if best_key is None or key > best_key:
-                best, best_key = i, key
-        if best is None:
-            return copies
-        r = copies[best]
-        spent += cost[best][r + 1] - cost[best][r]
-        copies[best] = r + 1
-
-
 def total(util: list[list[float]], cost: list[list[int]], copies: list[int]) -> tuple[float, int]:
-    """(Σ u_i(r_i), Σ cost_i(r_i)) — для перевірок і таблиць."""
+    """(сумарна корисність, сумарні біти) для обраних копій — для перевірок і таблиць."""
     return (sum(u[r] for u, r in zip(util, copies)), sum(c[r] for c, r in zip(cost, copies)))
