@@ -2,8 +2,7 @@ import random
 
 import pytest
 
-from log3.huffman import HuffmanError, canonical_codes, code_lengths, decode, encode, encoded_bits
-
+from log3.huffman import (HuffmanError, _package_merge, canonical_codes, code_lengths, decode, encode,encoded_bits)
 def test_empty_and_single_symbol():
     assert code_lengths(b"") == {}
     assert code_lengths(b"\x01" * 16) == {1: 1}
@@ -84,3 +83,37 @@ def test_decode_errors():
         decode(b"\x01", lengths, 7)          # ненульовий padding
     with pytest.raises(HuffmanError):
         encode(b"\x05", lengths)             # символу немає в таблиці
+
+def test_length_limited_fibonacci():
+    # частоти Фібоначчі дають звичайне дерево глибиною > 15
+    fib = [1, 1]
+    while len(fib) < 25:
+        fib.append(fib[-1] + fib[-2])
+    data = b"".join(bytes([i]) * f for i, f in enumerate(fib))
+    lengths = code_lengths(data)
+    assert max(lengths.values()) == 15 and len(lengths) == 25
+    assert sum(2.0 ** -n for n in lengths.values()) == 1.0
+    assert decode(encode(data, lengths), lengths, len(data)) == data
+
+
+def test_limit_not_applied_when_not_needed():
+    data = bytes(range(16)) * 3 + b"\x00" * 40
+    assert code_lengths(data) == code_lengths(data, max_len=10**6)
+
+
+def test_length_limit_is_optimal_vs_brute_force():
+    # package-merge має дати найменшу суму freq * довжина серед усіх повних кодів
+    import itertools
+    rng = random.Random(3)
+    for _ in range(60):
+        n = rng.randint(2, 6)
+        freq = {s: rng.randint(1, 40) for s in range(n)}
+        max_len = rng.randint(max(1, (n - 1).bit_length()), n - 1 if n > 2 else 1)
+        best = None
+        for ls in itertools.product(range(1, max_len + 1), repeat=n):
+            if sum(2.0 ** -x for x in ls) == 1.0:
+                c = sum(freq[s] * ls[s] for s in range(n))
+                best = c if best is None else min(best, c)
+        got = _package_merge(freq, max_len)
+        assert sum(2.0 ** -x for x in got.values()) == 1.0 and max(got.values()) <= max_len
+        assert sum(freq[s] * got[s] for s in freq) == best
