@@ -60,6 +60,34 @@ def solve_dp(util: list[list[float]], cost: list[list[int]], budget: int) -> lis
     return copies
 
 
+def solve_greedy(util: list[list[float]], cost: list[list[int]], budget: int) -> list[int]:
+    """Жадібний baseline: щоразу додає ту наступну копію, що дає найбільше корисності на біт.
+
+    Оптимуму не гарантує: вигідна «на біт» копія може зайняти місце,
+    де вмістилася б краща комбінація кількох інших (див. test_greedy_counterexample).
+    """
+    copies = [0] * len(util)
+    spent = 0
+    while True:
+        best_i, best_ratio = -1, -1.0
+        for i, (u, c) in enumerate(zip(util, cost)):
+            r = copies[i]
+            if r + 1 >= len(u):                       # у запису вже максимум копій
+                continue
+            extra_cost = c[r + 1] - c[r]
+            if spent + extra_cost > budget:           # наступна копія не влазить
+                continue
+            gain = u[r + 1] - u[r]
+            ratio = gain / extra_cost if extra_cost > 0 else float("inf")
+            if ratio > best_ratio:                    # строго: за рівності лишається менший індекс
+                best_i, best_ratio = i, ratio
+        if best_i < 0:                                # жодна копія більше не влазить
+            return copies
+        r = copies[best_i]
+        spent += cost[best_i][r + 1] - cost[best_i][r]
+        copies[best_i] = r + 1
+        
+
 def total(util: list[list[float]], cost: list[list[int]], copies: list[int]) -> tuple[float, int]:
     """(сумарна корисність, сумарні біти) для обраних копій — для перевірок і таблиць."""
     return (sum(u[r] for u, r in zip(util, copies)), sum(c[r] for c, r in zip(cost, copies)))
