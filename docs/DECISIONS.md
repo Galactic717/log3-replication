@@ -24,6 +24,15 @@ D1 — індивідуальна оцінка складності заявле
 
 ## Записи
 
+### Зона NN/GA/ATK (Artem, 2026-11-11)
+
+Рішення прийняв Artem (`artemkovbasuk780-hub`) разом з агентом Claude. **[звірити]** — там, де пакета викладача ще нема.
+
+- **2026-11-11 · Artem · Нема `train.csv`/`valid.csv`.** **Рішення:** `log3/nn/data.py` бере `materials/train.csv`/`valid.csv`, якщо вони є; інакше — dev-набір із мітками (`dev_labeled_session`), побудований за описом класів у завданні. Модель `log3/nn/model.npz` зараз навчена на dev-даних (`meta.data_source = "dev"`). Коли з'явиться пакет — `python -m log3.nn.train` перенавчає модель на справжніх даних, і тоді вмикається `test_c1_09_perceptron_macro_f1`. **Чому:** код і тести можна налагодити вже зараз, а справжні дані підхоплюються без правки коду.
+- **2026-11-11 · Artem · Ознаки.** Ознаки запису (severity, знаковий log metric, critical, record_flags, log event_code, one-hot category) + часові за вікном історії з `H` попередніх записів: мінімальний набір із `team_config.json` (`temporal_features`) і власні `log_dt`, `distinct_sources`, `code_family_run`, `dt_trend`, `metric_std`. Невідома назва в `temporal_features` → `ValueError` (краще впасти, ніж мовчки пропустити ознаку). `H` = `history_window` з конфігу, за замовчуванням 16. **Чому:** клас 2 визначається часовою структурою; на dev-valid без часових ознак macro-F1 падає з ≈0.92 до ≈0.72 (див. `results/confusion_matrix.md`).
+- **2026-11-11 · Artem · Архітектура і навчання.** MLP `ознаки → 32 → 16 → n_classes`, ReLU, softmax, зважена крос-ентропія (ваги класів `n / (K·n_k)`) + L2, Adam (`lr = 2e-3`, batch 64, 60 епох), 3 seeds, у кожному — ваги найкращої за valid-F1 епохи, потім найкращий seed. `n_classes = max(len(priority), max(мітка) + 1)`. **Чому:** дисбаланс (клас 1 ≈ 8 %) — ваги в loss дешевші за oversampling і не дублюють дані.
+- **2026-11-11 · Artem · Назва колонки мітки в CSV.** **[звірити]** Беремо з `records.LABEL_COLUMNS` (`label`/`class`/`cls`/`y`) — функція Гліба; якщо в `train.csv` інша назва, правка там.
+
 Рішення 2026-11-09 прийняв Гліб (`Galactic717`) разом з агентом Claude. Позначка **[звірити]** означає здогадку там, де документ викладача мовчить або його ще нема. Її треба перевірити, коли в `materials/` з'являться `expected_failures.json`, `REPLICATION_SPEC.md` і `team_config.json`.
 
 - **2026-11-09 · Гліб · Пакету викладача нема.** Локально є лише `FORMAT_SPEC_P3.md`. `REPLICATION_SPEC.md`, `team_config.json`, `replication.py`, CSV і `reference/` не отримано. **Рішення:** формат і криптографію робимо строго за `FORMAT_SPEC_P3.md`. Пайплайн тимчасово працює на `config/team_config.dev.json` і `log3/devsim.py`: модель Гілберта–Елліотта з глобальним бюджетом за методичкою 11.6, 11.44 і 11.90. Обидва файли позначено як dev. Справжні файли мають пріоритет автоматично: `materials/team_config.json` читає `load_config`, а `replication.py` підключається однією функцією `pipeline.make_model`. **Чому:** без цього інтеграцію не можна налагоджувати до тижня 8.
