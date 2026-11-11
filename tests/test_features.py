@@ -61,3 +61,14 @@ def test_normalizer_uses_train_statistics():
     # стовпець-константа не дає ділення на нуль
     const = Normalizer.fit(np.ones((10, 2)))
     assert np.isfinite(const.transform(np.ones((3, 2)))).all()
+
+
+def test_export_dev_csv_roundtrip(tmp_path):
+    """Експортовані dev-CSV читаються тим самим load_records_csv, що й справжні з materials/."""
+    from log3.nn.data import DEV_TRAIN, export_dev_csv
+    from log3.records import load_records_csv
+    paths = export_dev_csv(tmp_path, train=(50, DEV_TRAIN[1]), valid=(30, 5))
+    recs, y = load_records_csv(paths["train"])
+    exp_recs, exp_y = dev_labeled_session(50, DEV_TRAIN[1])
+    assert recs == exp_recs and y == exp_y
+    assert len(load_records_csv(paths["valid"])[0]) == 30
