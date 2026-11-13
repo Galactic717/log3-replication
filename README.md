@@ -92,7 +92,7 @@ tests/           pytest: формат, крипто, еталонні пакет
 scripts/         reproduce.py
 results/         C1, таблиці звіту 1–6, матриця помилок, журнал і графік ГА, атака, final_metrics.json
 docs/            REPORT.md (звіт), DECISIONS.md (лог рішень)
-META-USAGE.md    облік використання ШІ
+META-USAGE.md    облік використання ШІ (обов'язковий артефакт курсу)
 ```
 
 ## Команда
@@ -103,4 +103,6 @@ META-USAGE.md    облік використання ШІ
 | [@yaroslavronenko-ux](https://github.com/yaroslavronenko-ux) | Гаффман, ДП, розміщення по вузлах |
 | [@artemkovbasuk780-hub](https://github.com/artemkovbasuk780-hub) | перцептрон, генетичний алгоритм, модуль атаки |
 
-Внесок кожного видно з історії комітів; використання ШІ — у [META-USAGE.md](META-USAGE.md).
+Рішення кожної зони з обґрунтуванням — у [docs/DECISIONS.md](docs/DECISIONS.md), результати — у
+[docs/REPORT.md](docs/REPORT.md). Облік використання ШІ-інструментів, якого вимагає методичка, —
+у [META-USAGE.md](META-USAGE.md).
