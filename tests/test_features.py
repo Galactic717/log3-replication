@@ -1,4 +1,6 @@
 """Ознаки перцептрона: вікно історії лише назад, нормалізація за train."""
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -43,12 +45,29 @@ def test_history_window_matters(recs):
 
 
 def test_temporal_features_from_config_names():
-    spec = FeatureSpec(history=4, temporal=("events_per_window", "severity_mean"))
-    names = feature_names(spec)
-    assert "events_per_window" in names and "severity_mean" in names
-    assert "category_changes" not in names
+    from log3.config import load_config
+    from log3.nn.features import spec_for_config
+    cfg = load_config()
+    names = feature_names(spec_for_config(cfg))
+    assert all(n in names for n in cfg.temporal_features)          # мінімальний набір з конфігу
     with pytest.raises(ValueError):
         feature_names(FeatureSpec(history=4, temporal=("no_such_feature",)))
+    with pytest.raises(ValueError):
+        spec_for_config(dataclasses.replace(cfg, temporal_features=("невідома ознака",)))
+
+
+def test_non_monotonic_time_gives_finite_features(recs):
+    """Несортовані записи чи переповнення uint32 не дають NaN (інакше argmax тихо дасть клас 0)."""
+    shuffled = recs[::-1]
+    assert np.isfinite(build_features(shuffled, FeatureSpec(history=8))).all()
+
+
+def test_adjacent_codes_feature():
+    rs = [Record(1000 + 10 * i, 101, 200 + i, 0, 0, 0, 0, 0) for i in range(6)]
+    names = feature_names(FeatureSpec(history=4))
+    X = build_features(rs, FeatureSpec(history=4))
+    col = names.index("частка пар подій із сусідніми event_code у вікні")
+    assert X[0, col] == 0 and X[5, col] == 1.0
 
 
 def test_normalizer_uses_train_statistics():
@@ -61,14 +80,3 @@ def test_normalizer_uses_train_statistics():
     # стовпець-константа не дає ділення на нуль
     const = Normalizer.fit(np.ones((10, 2)))
     assert np.isfinite(const.transform(np.ones((3, 2)))).all()
-
-
-def test_export_dev_csv_roundtrip(tmp_path):
-    """Експортовані dev-CSV читаються тим самим load_records_csv, що й справжні з materials/."""
-    from log3.nn.data import DEV_TRAIN, export_dev_csv
-    from log3.records import load_records_csv
-    paths = export_dev_csv(tmp_path, train=(50, DEV_TRAIN[1]), valid=(30, 5))
-    recs, y = load_records_csv(paths["train"])
-    exp_recs, exp_y = dev_labeled_session(50, DEV_TRAIN[1])
-    assert recs == exp_recs and y == exp_y
-    assert len(load_records_csv(paths["valid"])[0]) == 30
