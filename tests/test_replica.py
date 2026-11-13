@@ -3,13 +3,12 @@ import random
 import time
 
 import pytest
+from conftest import PASSWORD, SALT, make_records
 
-from conftest import MATERIALS, PASSWORD, SALT, make_records
 from log3 import crypto
 from log3.payload import FLAG_NO_COMPRESSION, build_payload
 from log3.records import pack_records
-from log3.replica import (HEADER_SIZE, Log3Error, as_receiver, build_replica, parse_replica,
-                          seal_payload)
+from log3.replica import HEADER_SIZE, Log3Error, as_receiver, build_replica, parse_replica, seal_payload
 
 
 def blob_of(records, **kw):
@@ -131,35 +130,36 @@ def test_fuzz_only_log3_error():
 
 # --- еталонні пакети викладача (materials/reference/, локально) -----------------------------
 
-def _expected_failures(ref_dir):
-    data = json.loads((ref_dir / "expected_failures.json").read_text(encoding="utf-8"))
-    if isinstance(data, list):   # [{"file": ..., "code": ...}]
-        return {d.get("file") or d.get("name"): d.get("code") or d.get("expected") for d in data}
-    return {k: (v["code"] if isinstance(v, dict) else v) for k, v in data.items()}
-
-
-def _password(ref_dir, stem):
-    for p in (ref_dir / f"{stem}.json", ref_dir / "passwords.json"):
-        if p.exists():
-            meta = json.loads(p.read_text(encoding="utf-8"))
-            if "password" in meta:
-                return meta["password"], meta
-    from log3.config import load_config
-    return load_config().password, {}
-
-
 def test_c1_12_reference_packets(reference_dir):
+    """Кожен ref_* читається, записи й class_table збігаються з описом, а наш передавач із тими
+    самими сіллю, nonce і таблицею дає побайтово ту саму репліку (крос-сумісність формату).
+    Кожен bad_* відхиляється рівно з кодом з expected_failures.json."""
+    from log3.records import Record
+    from log3.replica import parse_header, seal_payload
+
     start = time.perf_counter()
     refs = sorted(reference_dir.glob("ref_*.bin"))
-    assert refs, "у reference/ нема ref_*.bin"
+    assert len(refs) == 6
     for path in refs:
-        password, meta = _password(reference_dir, path.stem)
-        rep = parse_replica(path.read_bytes(), password)
-        if "record_count" in meta:
-            assert len(rep.records) == meta["record_count"], path.name
-    expected = _expected_failures(reference_dir)
-    for path in sorted(reference_dir.glob("bad_*.bin")):
-        want = expected.get(path.name) or expected.get(path.stem)
-        password, _ = _password(reference_dir, path.stem)
-        assert code_of(path.read_bytes(), password) == want, path.name
+        meta = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
+        blob = path.read_bytes()
+        assert len(blob) == meta["довжина_репліки"], path.name
+        rep = parse_replica(blob, meta["пароль"])
+        records = [Record(**r) for r in meta["записи"]]
+        assert rep.records == records and len(records) == meta["record_count"], path.name
+        assert rep.class_table == meta["class_table"], path.name
+        table = {t["символ"]: t["довжина"] for t in meta["таблиця_кодів"] or []}
+        raw = bool(meta["flags"] & 0x08)
+        payload = build_payload(records, compress=not raw, lengths=table if records else None,
+                                class_table=meta["class_table"], no_compression_threshold=None if raw else 1e9)
+        h = parse_header(blob)
+        again = seal_payload(payload, meta["пароль"], replica_group_id=h.replica_group_id, batch_seq=h.batch_seq,
+                             salt=bytes.fromhex(meta["salt_hex"]), nonce=bytes.fromhex(meta["nonce_hex"]))
+        assert again == blob, f"{path.name}: наш передавач дає інші байти"
+    expected = json.loads((reference_dir / "expected_failures.json").read_text(encoding="utf-8"))
+    password = json.loads((reference_dir / "ref_01_single_record.json").read_text(encoding="utf-8"))["пароль"]
+    bad = sorted(reference_dir.glob("bad_*.bin"))
+    assert len(bad) == len(expected) == 7
+    for path in bad:
+        assert code_of(path.read_bytes(), password) == expected[path.name]["очікуваний_код"], path.name
     assert time.perf_counter() - start < 60

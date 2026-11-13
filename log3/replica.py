@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import os
 import struct
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from . import crypto
 from .payload import PayloadError, build_payload, parse_payload
