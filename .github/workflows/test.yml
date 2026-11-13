@@ -2,19 +2,24 @@ name: tests
 
 on:
   push:
-    branches: [main, dev, "feat/**"]
+    branches: [main, dev]
   pull_request:
 
 jobs:
-  pytest:
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: pip
-      - run: pip install -r requirements.txt
-      # materials/ (пакет викладача) у CI нема: тести еталонних пакетів пропускаються,
-      # пайплайн іде на config/team_config.dev.json і log3/devsim.py.
-      - run: pytest -q
+      - run: pip install -r requirements.txt ruff==0.17.5
+      - run: ruff check .
+      # пакета викладача в публічному репо нема: тести йдуть на dev-конфігу й dev-моделі,
+      # кейси, яким потрібні materials/ (еталонні пакети, valid.csv), пропускаються
+      - run: python -m pytest -q
