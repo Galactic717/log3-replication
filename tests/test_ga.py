@@ -8,12 +8,12 @@ from log3.pipeline import Params
 
 
 def _unit(p: Params) -> np.ndarray:
-    """Params -> точка в [0, 1]^3 (через межі генів)."""
+    """Params -> точка в [0, 1]^k (через межі генів)."""
     return np.array([(v - lo) / (hi - lo) for v, (lo, hi) in zip(encode(p), DEFAULT_BOUNDS.values())])
 
 
 def rastrigin_fitness(p: Params) -> float:
-    """Тестова функція з CONTRACTS («заглушки»): мінус Растригін, максимум 0 у центрі куба."""
+    """Тестова функція: мінус Растригін, максимум 0 у центрі куба."""
     z = (_unit(p) - 0.5) * 10.24
     return -float(10 * len(z) + np.sum(z * z - 10 * np.cos(2 * np.pi * z)))
 
@@ -23,13 +23,19 @@ def sphere_fitness(p: Params) -> float:
 
 
 def test_encode_decode_roundtrip():
-    p = Params(48, 1.0, 1.55)
+    p = Params(48, 1.0, 1.55, 1.0, 1.0)
     assert decode(encode(p)) == p
-    q = decode(np.array([1e9, -5.0, 99.0]))            # за межами -> обрізано до меж
-    lo_hi = list(DEFAULT_BOUNDS.values())
-    assert q.window_records == lo_hi[0][1]
-    assert q.no_compression_threshold == lo_hi[1][0]
-    assert q.second_copy_factor == lo_hi[2][1]
+    q = decode(np.array([1e9, -5.0, 99.0, 0.0, 1e9]))   # за межами -> обрізано до меж
+    b = DEFAULT_BOUNDS
+    assert q.window_records == b["window_records"][1] and q.budget_scale == b["budget_scale"][0]
+    assert q.second_copy_factor == b["second_copy_factor"][1] and q.pacing_slack == b["pacing_slack"][1]
+
+
+def test_f2_never_exceeds_f3():
+    from log3.config import load_config
+    from log3.ga.ga import bounds_from_config
+    cfg = load_config()
+    assert bounds_from_config(cfg)["second_copy_factor"][1] == cfg.third_copy_factor
 
 
 def test_d1_ga_elitism_not_worse_than_gen0():
@@ -69,7 +75,8 @@ def test_deterministic_by_seed():
     a = run_ga(sphere_fitness, pop_size=10, generations=6, seed=3)
     b = run_ga(sphere_fitness, pop_size=10, generations=6, seed=3)
     assert a == b
-    assert random_search(sphere_fitness, evaluations=30, seed=1) == random_search(sphere_fitness, evaluations=30, seed=1)
+    rs = [random_search(sphere_fitness, evaluations=30, seed=1) for _ in range(2)]
+    assert rs[0] == rs[1]
 
 
 def test_without_elitism_runs():
@@ -78,8 +85,11 @@ def test_without_elitism_runs():
 
 
 def test_ga_on_pipeline_evaluate_smoke():
-    """Зв'язка з фітнесом Гліба: pipeline.evaluate приймає Params від ГА."""
-    from log3.pipeline import evaluate
-    r = run_ga(lambda p: evaluate(p, 0, n_seeds=1), pop_size=3, generations=2, seed=0)
-    assert 0.0 <= r.best_fitness <= 1.0
+    """Зв'язка з фітнесом: pipeline.evaluate приймає Params від ГА; фітнес > 0 (помилки тракту
+    не ховаються в 0)."""
+    from log3.config import load_config
+    from log3.pipeline import FitnessCache, evaluate
+    cache = FitnessCache(load_config())
+    r = run_ga(lambda p: evaluate(p, (1,), scenarios=("normal",), cache=cache), pop_size=3, generations=2, seed=0)
+    assert 0.0 < r.best_fitness <= 1.0
     assert isinstance(r.best_params, Params)

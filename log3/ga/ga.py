@@ -1,31 +1,31 @@
-"""Генетичний алгоритм для параметрів пайплайна (контракт CONTRACTS.md §7).
+"""Генетичний алгоритм для параметрів пайплайна (умова §3.6).
 
-Хромосома — три дійсні гени (Params): розмір вікна реплікації, поріг NO_COMPRESSION,
-коефіцієнт другої копії f2. Вікно — ціле, тому при декодуванні округлюється.
+Хромосома — дійсні гени, по одному на поле pipeline.Params:
+  window_records      розмір вікна реплікації (ціле, при декодуванні округлюється);
+  budget_scale        частка бюджету ДП вікна replication_budget_bits;
+  second_copy_factor  f2 у корисності другої копії (обмежено f2 ≤ f3 з конфігу);
+  critical_scale      вага critical_bonus у цінності v_i (вага планувальника);
+  pacing_slack        скільки рівних часток глобального бюджету може взяти одне вікно.
+Множники відносні, тож мікрозміни умови (бюджет −30 %, новий клас) лишаються в силі.
 
 Один крок покоління:
-  1. турнірна селекція: з k випадкових особин батьком стає найкраща (k = tournament_k).
-     Більше k — сильніший тиск відбору, менше різноманіття;
-  2. кросовер BLX-α (α = 0.5): кожен ген дитини — випадкова точка з відрізка між генами
-     батьків, розширеного на α·|різниця| в обидва боки; так нащадок може вийти і за межі
-     батьків, і ГА не «стискається» передчасно. Імовірність кросовера p_c;
-  3. мутація: до гена з імовірністю p_m додається гаусів шум σ = sigma·(ширина меж);
+  1. турнірна селекція: з k випадкових особин батьком стає найкраща (k = tournament_k);
+  2. кросовер BLX-α (α = 0.5): ген дитини — випадкова точка з відрізка між генами
+     батьків, розширеного на α·|різниця| в обидва боки. Імовірність кросовера p_c;
+  3. мутація: до гена з імовірністю p_m додається гаусів шум σ = sigma·(ширина меж),
      результат обрізається до меж;
-  4. елітизм: найкраща особина попереднього покоління замінює найгіршу дитину.
-     Тому найкращий фітнес у популяції не спадає між поколіннями (history не спадає).
+  4. елітизм: найкраща особина попереднього покоління замінює найгіршу дитину,
+     тому найкращий фітнес у популяції не спадає між поколіннями.
 
 Бюджет обчислень: покоління 0 — pop_size оцінок, кожне наступне — pop_size оцінок дітей
-(еліта не переоцінюється: її фітнес уже відомий). Разом рівно pop_size·generations —
-стільки ж отримує random_search для чесного порівняння.
-
-Фітнес — pipeline.evaluate (середній Q за кількома відкритими seeds), щоб ГА не
-перенавчився під один сценарій відмов: офіційний Q рахують на прихованих seeds.
-Межі генів: DEFAULT_BOUNDS або "ga_bounds" у team_config.json.
+(еліта не переоцінюється). Разом рівно pop_size·generations — стільки ж отримує
+random_search. Фітнес детермінований (pipeline.evaluate без γ·T), тож збережений фітнес
+еліти — не «щасливий замір».
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import numpy as np
 
@@ -33,9 +33,11 @@ from ..pipeline import Params
 
 # Межі генів (включно). Це межі ПОШУКУ, а не умова задачі; конфіг може їх перевизначити.
 DEFAULT_BOUNDS: dict[str, tuple[float, float]] = {
-    "window_records": (8.0, 192.0),
-    "no_compression_threshold": (0.5, 1.5),
-    "second_copy_factor": (1.0, 2.5),
+    "window_records": (16.0, 256.0),
+    "budget_scale": (0.2, 1.5),
+    "second_copy_factor": (1.0, 1.85),
+    "critical_scale": (0.5, 30.0),
+    "pacing_slack": (1.0, 3.0),
 }
 
 
@@ -49,21 +51,20 @@ class GAResult:
 
 
 def bounds_from_config(cfg) -> dict[str, tuple[float, float]]:
-    b = dict(DEFAULT_BOUNDS)
-    for k, v in (cfg.raw.get("ga_bounds") or {}).items():
-        if k in b:
-            b[k] = (float(v[0]), float(v[1]))
-    return b
+    """f2 не може перевищувати f3 конфігу: інакше третя копія мала б від'ємний приріст."""
+    return {**DEFAULT_BOUNDS, "second_copy_factor": (1.0, cfg.third_copy_factor)}
 
 
 def encode(p: Params) -> np.ndarray:
-    return np.array([p.window_records, p.no_compression_threshold, p.second_copy_factor], dtype=float)
+    return np.array([getattr(p, k) for k in DEFAULT_BOUNDS], dtype=float)
 
 
 def decode(x: np.ndarray, bounds: dict[str, tuple[float, float]] = DEFAULT_BOUNDS) -> Params:
     lo, hi = _lo_hi(bounds)
     x = np.clip(x, lo, hi)
-    return Params(int(round(x[0])), float(x[1]), float(x[2]))
+    genes = dict(zip(bounds, (float(v) for v in x)))
+    genes["window_records"] = int(round(genes["window_records"]))
+    return Params(**genes)
 
 
 def _lo_hi(bounds):
@@ -75,7 +76,8 @@ def _lo_hi(bounds):
 def run_ga(fitness: Callable[[Params], float], *, pop_size: int, generations: int, seed: int,
            elitism: bool = True, tournament_k: int = 3, p_crossover: float = 0.9,
            p_mutation: float | None = None, sigma: float = 0.1, blx_alpha: float = 0.5,
-           bounds: dict[str, tuple[float, float]] | None = None) -> GAResult:
+           bounds: dict[str, tuple[float, float]] | None = None, map_fn=map) -> GAResult:
+    """map_fn — як оцінювати популяцію (map або pool.map для паралельних процесів)."""
     if pop_size < 2 or generations < 1:
         raise ValueError("pop_size ≥ 2, generations ≥ 1")
     bounds = bounds or DEFAULT_BOUNDS
@@ -88,7 +90,7 @@ def run_ga(fitness: Callable[[Params], float], *, pop_size: int, generations: in
     def evaluate(pop):
         nonlocal evals
         evals += len(pop)
-        return np.array([fitness(decode(ind, bounds)) for ind in pop])
+        return np.array(list(map_fn(fitness, [decode(ind, bounds) for ind in pop])))
 
     pop = lo + rng.random((pop_size, n_genes)) * (hi - lo)       # покоління 0: рівномірно в межах
     fit = evaluate(pop)
