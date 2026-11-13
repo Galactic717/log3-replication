@@ -2,7 +2,9 @@ import random
 
 import pytest
 
-from log3.huffman import (HuffmanError, _package_merge, canonical_codes, code_lengths, decode, encode,encoded_bits)
+from log3.huffman import HuffmanError, _package_merge, canonical_codes, code_lengths, decode, encode, encoded_bits
+
+
 def test_empty_and_single_symbol():
     assert code_lengths(b"") == {}
     assert code_lengths(b"\x01" * 16) == {1: 1}
@@ -98,7 +100,9 @@ def test_length_limited_fibonacci():
 
 def test_limit_not_applied_when_not_needed():
     data = bytes(range(16)) * 3 + b"\x00" * 40
-    assert code_lengths(data) == code_lengths(data, max_len=10**6)
+    assert code_lengths(data) == code_lengths(data, max_len=15)
+    with pytest.raises(ValueError):                    # довших за 15 кодів формат не дозволяє
+        code_lengths(data, max_len=16)
 
 
 def test_length_limit_is_optimal_vs_brute_force():

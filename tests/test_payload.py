@@ -2,11 +2,10 @@ import random
 import struct
 
 import pytest
-
 from conftest import make_records
+
 from log3 import huffman
-from log3.payload import (FLAG_CLASS_TABLE, FLAG_NO_COMPRESSION, OVERHEAD, PayloadError,
-                          build_payload, parse_payload)
+from log3.payload import FLAG_CLASS_TABLE, FLAG_NO_COMPRESSION, OVERHEAD, PayloadError, build_payload, parse_payload
 from log3.records import Record, pack_records
 
 DEGENERATE = Record(0x01010101, 0x0101, 0x0101, 0x01010101, 1, 1, 1, 1)  # усі 16 байтів = 0x01
