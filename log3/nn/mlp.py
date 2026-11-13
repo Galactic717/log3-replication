@@ -44,11 +44,11 @@ class MLP:
     # ---- прямий прохід ----
     def _forward(self, X: np.ndarray):
         A, cache = X, []
-        for l in range(self.n_layers):
-            W, b = self.params[2 * l], self.params[2 * l + 1]
+        for k in range(self.n_layers):
+            W, b = self.params[2 * k], self.params[2 * k + 1]
             Z = A @ W + b
             cache.append((A, Z))
-            A = np.maximum(Z, 0.0) if l < self.n_layers - 1 else Z
+            A = np.maximum(Z, 0.0) if k < self.n_layers - 1 else Z
         return A, cache                                   # A — логіти
 
     @staticmethod
@@ -80,13 +80,13 @@ class MLP:
         delta[np.arange(n), y] -= 1.0                    # P − Y
         delta *= (c / s)[:, None]
         grads: list[np.ndarray] = [None] * len(self.params)  # type: ignore[list-item]
-        for l in reversed(range(self.n_layers)):
-            A_prev, _ = cache[l]
-            W = self.params[2 * l]
-            grads[2 * l] = A_prev.T @ delta + self.l2 * W
-            grads[2 * l + 1] = delta.sum(axis=0)
-            if l > 0:
-                _, Z_prev = cache[l - 1]
+        for k in reversed(range(self.n_layers)):
+            A_prev, _ = cache[k]
+            W = self.params[2 * k]
+            grads[2 * k] = A_prev.T @ delta + self.l2 * W
+            grads[2 * k + 1] = delta.sum(axis=0)
+            if k > 0:
+                _, Z_prev = cache[k - 1]
                 delta = (delta @ W.T) * (Z_prev > 0)
         return loss, grads
 
@@ -101,7 +101,7 @@ class MLP:
         return d
 
     @classmethod
-    def from_arrays(cls, d) -> "MLP":
+    def from_arrays(cls, d) -> MLP:
         sizes = [int(s) for s in d["sizes"]]
         net = cls(sizes[0], tuple(sizes[1:-1]), sizes[-1], seed=0, l2=float(d["l2"]))
         net.params = [np.array(d[f"p{i}"], dtype=float) for i in range(len(net.params))]
