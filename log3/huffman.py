@@ -1,4 +1,9 @@
-"""Канонічний Гаффман: довжини кодів через heapq і канонічні коди (етап 1)."""
+"""Канонічний Гаффман (FORMAT_SPEC_P3 §3.2): довжини кодів через чергу з пріоритетами (heapq),
+канонічні коди через bl_count / next_code, кодування MSB-first і строге декодування.
+
+У потік передаються лише довжини кодів; декодер відновлює ті самі коди. Довжини 1..15:
+якщо дерево Гаффмана глибше, довжини будує package-merge (оптимальний length-limited код).
+"""
 from __future__ import annotations
 
 import heapq
@@ -13,6 +18,8 @@ class HuffmanError(ValueError):
 
 def code_lengths(data: bytes, max_len: int = MAX_LEN) -> dict[int, int]:
     """symbol -> довжина коду. Порожні дані -> {}, один символ -> {sym: 1}."""
+    if not 1 <= max_len <= MAX_LEN:
+        raise ValueError(f"max_len має бути 1..{MAX_LEN}: довші коди декодер відхилить")
     freq = Counter(data)
     if not freq:
         return {}

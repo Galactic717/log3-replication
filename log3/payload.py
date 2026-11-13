@@ -91,7 +91,8 @@ def build_payload(records: list[Record], *, compress: bool = True,
         flags |= FLAG_CLASS_TABLE
         tail = bytes(class_table)
 
-    if compress and n:
+    if compress:
+        # порожній журнал теж тут: таблиця й потік порожні, flags = 0 — як ref_02_empty
         table = lengths if lengths is not None else huffman.code_lengths(raw)
         stream = huffman.encode(raw, table)
         packed = OVERHEAD + 2 * len(table) + len(stream)
@@ -100,7 +101,7 @@ def build_payload(records: list[Record], *, compress: bool = True,
             return (_HEAD.pack(n, flags, 0, len(table)) + pairs
                     + _MID.pack(len(raw), len(stream)) + stream + tail)
 
-    # Сирі записи. Порожній журнал теж іде сюди: 14 байтів, record_count = 0.
+    # Сирі записи (NO_COMPRESSION): коротші за таблицю + потік або стиснення вимкнено.
     flags |= FLAG_NO_COMPRESSION
     return _HEAD.pack(n, flags, 0, 0) + _MID.pack(len(raw), len(raw)) + raw + tail
 
