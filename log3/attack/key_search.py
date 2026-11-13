@@ -6,7 +6,8 @@
 Перезапуск при застої: зсув у байті i залежить від сусіднього байта ключа, тож буває
 локальний оптимум (≈0.94), з якого не вийти зміною одного біта — треба одночасно змінити
 два байти. Якщо найкращий фітнес не росте `stagnation` поколінь, популяцію створюємо
-заново (найкращий ключ за весь час пам'ятаємо окремо). Зупинка — фітнес 1.0 або вичерпано покоління. Для порівняння — random_key_search
+заново (найкращий ключ за весь час пам'ятаємо окремо). Зупинка — фітнес 1.0 або вичерпано
+покоління. Для порівняння — random_key_search
 з тим самим бюджетом оцінок: на 2^64 ключах він не знаходить нічого кращого за ~0.5.
 """
 from __future__ import annotations
@@ -55,7 +56,7 @@ def ga_recover_key(known_pairs, *, seed: int, key_len: int = 8, pop_size: int = 
     since_improve, restarts = 0, 0
 
     def tournament():
-        idx = rng.choice(pop_size, size=tournament_k, replace=False)
+        idx = rng.choice(pop_size, size=min(tournament_k, pop_size), replace=False)
         return pop[idx[fit[idx].argmax()]]
 
     for _ in range(generations - 1):

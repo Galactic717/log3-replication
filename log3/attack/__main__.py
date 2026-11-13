@@ -13,8 +13,9 @@ import argparse
 import statistics
 
 from ..config import ROOT, load_config
-from ..nn.data import dev_labeled_session
-from ..replica import as_receiver, build_replica
+from ..pipeline import load_session
+from ..recovery import recover
+from ..replica import HEADER_SIZE, as_receiver, build_replica
 from .key_search import ga_recover_key, random_key_search
 from .tamper import KINDS, tamper_test
 from .weak_cipher import known_pairs, random_key
@@ -35,13 +36,16 @@ def main(n_keys: int = 10, trials: int = 2000, key_len: int = 8, n_pairs: int = 
         "AES-256-CTR, яким шифруються справжні репліки, не атакуємо: у нього немає часткової "
         "правильності — хибний біт ключа змінює ≈ половину бітів кожного блоку, і ландшафт фітнесу пласкіший.",
         "",
-        "| ключ (seed) | ГА: знайдено | ГА: покоління | ГА: оцінок | перезапусків | random search: найкращий фітнес (той самий бюджет) |",
+        "| ключ (seed) | ГА: знайдено | ГА: покоління | ГА: оцінок | перезапусків "
+        "| random search: найкращий фітнес (той самий бюджет) |",
         "| --: | :-- | --: | --: | --: | --: |",
     ]
+    cfg = load_config()
+    session = load_session(cfg)
     found, evals = 0, []
     for s in range(n_keys):
         key = random_key(key_len, seed=s)
-        pairs = known_pairs(key, n_pairs=n_pairs, seed=s)
+        pairs = known_pairs(key, session, n_pairs=n_pairs, seed=s)
         r = ga_recover_key(pairs, seed=s, key_len=key_len)
         rs = random_key_search(pairs, evaluations=r.evaluations, seed=s, key_len=key_len)
         ok = r.key == key
@@ -62,8 +66,7 @@ def main(n_keys: int = 10, trials: int = 2000, key_len: int = 8, n_pairs: int = 
         "",
     ]
 
-    cfg = load_config()
-    recs = dev_labeled_session(32, seed=0)[0]
+    recs = session[:32]
     blob = build_replica(recs, cfg.password, replica_group_id=1, batch_seq=0)
     receiver = as_receiver(cfg.password)
     assert receiver(blob) is None, "незмінена репліка має прийматися"
@@ -87,11 +90,43 @@ def main(n_keys: int = 10, trials: int = 2000, key_len: int = 8, n_pairs: int = 
         "Зміна будь-якого байта шифротексту чи HMAC дає `E_HMAC`: HMAC-SHA256 рахується над заголовком і "
         "шифротекстом і перевіряється до розшифрування, тож парсер не бачить підроблених даних. Зміна magic — "
         "`E_MAGIC`, обрізання й дописування — `E_SHORT`/`E_LENGTH` (перевірки йдуть до HMAC).",
+        "",
+        "## 3. Змістовні сценарії підміни",
+        "",
+        "| сценарій | результат приймача |",
+        "| :-- | :-- |",
+        *[f"| {name} | {res} |" for name, res in _targeted(cfg, recs, blob, receiver)],
+        "",
+        "Повтор справжньої репліки HMAC не ловить (вона справжня), але шкоди немає: відновлювач "
+        "дедуплікує записи за 16-байтовим поданням, тож повтор не подвоює подій і не змінює R. "
+        "Захист від повтору (лічильник batch_seq на приймачі) у базовий формат не входить.",
     ]
     text = "\n".join(lines) + "\n"
     (ROOT / "results").mkdir(exist_ok=True)
     (ROOT / "results" / "attack.md").write_text(text, encoding="utf-8")
     return text
+
+
+def _targeted(cfg, recs, blob, receiver) -> list[tuple[str, str]]:
+    """Атаки з наміром, а не випадкові біти: чужий ключ, підміна полів заголовка, повтор."""
+    def verdict(b):
+        code = receiver(b)
+        return "прийнято" if code is None else f"відхилено, `{code}`"
+    foreign = build_replica(recs, cfg.password + "-other-team", replica_group_id=1, batch_seq=0)
+    seq = bytearray(blob)
+    seq[7:11] = (int.from_bytes(seq[7:11], "big") + 1).to_bytes(4, "big")        # batch_seq + 1
+    nonce = bytearray(blob)
+    nonce[27] ^= 0x01                                                             # інший nonce
+    replayed, _ = recover([blob, blob], cfg.password)
+    return [
+        ("репліка іншої команди (інший пароль)", verdict(foreign)),
+        ("змінено batch_seq у відкритому заголовку", verdict(bytes(seq))),
+        ("змінено nonce (спроба іншого keystream)", verdict(bytes(nonce))),
+        ("шифротекст іншої репліки під цим заголовком",
+         verdict(blob[:HEADER_SIZE] + foreign[HEADER_SIZE:])),
+        ("повтор справжньої репліки двічі",
+         f"прийнято обидві; після дедуплікації {len(replayed)} записів із {len(recs)}"),
+    ]
 
 
 if __name__ == "__main__":
