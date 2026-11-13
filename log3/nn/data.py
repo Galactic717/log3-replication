@@ -16,21 +16,20 @@ dev-набір: синтетичний журнал із мітками 0/1/2, �
 """
 from __future__ import annotations
 
-import argparse
-import csv
 import random
 from pathlib import Path
 
 from ..config import ROOT
-from ..records import FIELD_NAMES, Record, load_records_csv
+from ..records import Record, load_records_csv
 
 TRAIN_CSV = ROOT / "materials" / "train.csv"
 VALID_CSV = ROOT / "materials" / "valid.csv"
-DEV_DATA_DIR = ROOT / "dev_data"          # експорт dev-набору — НЕ materials/
+TEST_CSV = ROOT / "materials" / "session.csv"
 
 # Розміри й seeds dev-набору (лише для налагодження, не параметри задачі).
 DEV_TRAIN = (6000, 101)
 DEV_VALID = (3000, 202)
+DEV_TEST = (1200, 303)
 
 
 def dev_labeled_session(n: int, seed: int) -> tuple[list[Record], list[int]]:
@@ -90,42 +89,16 @@ def dev_labeled_session(n: int, seed: int) -> tuple[list[Record], list[int]]:
 
 
 def load_split(name: str) -> tuple[list[Record], list[int], str]:
-    """('train'|'valid') -> (записи, мітки, джерело 'materials' | 'dev')."""
-    path: Path = {"train": TRAIN_CSV, "valid": VALID_CSV}[name]
+    """('train'|'valid'|'test') -> (записи, мітки, джерело 'materials' | 'dev').
+
+    test — розмічений session.csv: у виборі моделі не бере участі, тому його macro-F1 —
+    чесна оцінка якості (valid уже використано для вибору епохи, seed і гіперпараметрів)."""
+    path: Path = {"train": TRAIN_CSV, "valid": VALID_CSV, "test": TEST_CSV}[name]
     if path.exists():
         recs, labels = load_records_csv(path)
         if labels is None:
             raise ValueError(f"{path}: нема колонки мітки класу")
         return recs, labels, "materials"
-    n, seed = DEV_TRAIN if name == "train" else DEV_VALID
+    n, seed = {"train": DEV_TRAIN, "valid": DEV_VALID, "test": DEV_TEST}[name]
     recs, labels = dev_labeled_session(n, seed)
     return recs, labels, "dev"
-
-
-def export_dev_csv(out_dir: Path = DEV_DATA_DIR, *, train=DEV_TRAIN, valid=DEV_VALID) -> dict[str, Path]:
-    """Записати dev-набір у CSV того ж формату, що й materials/train.csv (поля Record + label).
-
-    Навмисно в окрему теку dev_data/, а не в materials/: файли в materials/ код вважає
-    даними викладача (load_split -> 'materials', test_c1_09). Ці CSV — лише зразок формату
-    і dev-дані для налагодження; коли прийде пакет викладача, його кладуть у materials/.
-    """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    paths = {}
-    for name, (n, seed) in (("train", train), ("valid", valid)):
-        recs, labels = dev_labeled_session(n, seed)
-        p = out_dir / f"dev_{name}.csv"
-        with open(p, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([*FIELD_NAMES, "label"])
-            for r, y in zip(recs, labels):
-                w.writerow([*(getattr(r, k) for k in FIELD_NAMES), y])
-        paths[name] = p
-    return paths
-
-
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Експорт dev-набору з мітками в CSV (не дані викладача).")
-    ap.add_argument("--out", type=Path, default=DEV_DATA_DIR)
-    for name, path in export_dev_csv(ap.parse_args().out).items():
-        print(f"{name}: {path}")

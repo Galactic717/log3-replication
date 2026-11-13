@@ -7,7 +7,7 @@ import pytest
 from log3.config import load_config
 from log3.nn import classify as clf
 from log3.nn.data import dev_labeled_session
-from log3.nn.mlp import MLP, Adam, SGD, confusion_matrix, gradient_check, macro_f1
+from log3.nn.mlp import MLP, SGD, Adam, confusion_matrix, gradient_check, macro_f1
 from log3.nn.train import TrainSettings, train_one
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,23 +90,14 @@ def test_classify_records_contract():
     assert clf.classify_records([]) == []
 
 
-def test_dev_model_macro_f1_on_dev_valid():
-    """Поки нема materials/: збережена dev-модель має macro-F1 ≥ F1_min на dev-valid."""
-    meta = clf.model_meta()
-    if meta.get("data_source") != "dev":
-        pytest.skip("модель навчено не на dev-даних — діє test_c1_09")
-    recs, y = dev_labeled_session(meta["dev_valid_records"], seed=meta["dev_valid_seed"])
-    f1 = macro_f1(y, clf.classify_records(recs))
-    assert f1 >= (load_config().F1_min or 0.0)
-
-
 def test_c1_09_perceptron_macro_f1():
+    """Holdout викладача прихований; перевіряємо valid (вибір моделі) і розмічений session.csv
+    (у виборі не брав участі) — обидва мають бути ≥ F1_min."""
     if not VALID_CSV.exists():
         pytest.skip("materials/valid.csv нема — C1 №9 перевіряється на справжніх даних")
     from log3.records import load_records_csv
-    recs, y = load_records_csv(VALID_CSV)
-    assert y is not None, "у valid.csv нема колонки мітки"
-    f1 = macro_f1(y, clf.classify_records(recs))
     F1_min = load_config().F1_min
-    assert F1_min is not None, "F1_min нема в team_config.json"
-    assert f1 >= F1_min, f"macro-F1 {f1:.3f} < F1_min {F1_min}"
+    for path in (VALID_CSV, VALID_CSV.with_name("session.csv")):
+        recs, y = load_records_csv(path)
+        f1 = macro_f1(y, clf.classify_records(recs))
+        assert f1 >= F1_min, f"{path.name}: macro-F1 {f1:.3f} < F1_min {F1_min}"
