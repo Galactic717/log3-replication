@@ -1,10 +1,8 @@
-"""Канонічний Гаффман (FORMAT_SPEC_P3 §3.2, контракт docs/CONTRACTS.md §2).
+"""Канонічний Гаффман (FORMAT_SPEC_P3 §3.2): довжини кодів через чергу з пріоритетами (heapq),
+канонічні коди через bl_count / next_code, кодування MSB-first і строге декодування.
 
-Модуль реалізував голова (Galactic717): без нього не читаються стиснені
-еталонні репліки (C1 №1, №12). Сигнатури — з контракту, тести — tests/test_huffman.py.
-
-У потік кладуть лише довжини кодів: обидві сторони однаково відновлюють коди
-алгоритмом bl_count/next_code (RFC 1951 §3.2.2), дерево не передається.
+У потік передаються лише довжини кодів; декодер відновлює ті самі коди. Довжини 1..15:
+якщо дерево Гаффмана глибше, довжини будує package-merge (оптимальний length-limited код).
 """
 from __future__ import annotations
 
@@ -15,18 +13,20 @@ MAX_LEN = 15
 
 
 class HuffmanError(ValueError):
-    pass
+    """Некоректна таблиця довжин або пошкоджений потік."""
 
 
 def code_lengths(data: bytes, max_len: int = MAX_LEN) -> dict[int, int]:
     """symbol -> довжина коду. Порожні дані -> {}, один символ -> {sym: 1}."""
+    if not 1 <= max_len <= MAX_LEN:
+        raise ValueError(f"max_len має бути 1..{MAX_LEN}: довші коди декодер відхилить")
     freq = Counter(data)
     if not freq:
         return {}
     if len(freq) == 1:
         return {next(iter(freq)): 1}
-    # (вага, унікальний tie-break, вузол): tie-break робить дерево детермінованим
-    # і не дає heapq порівнювати самі вузли. Листи — int, внутрішні вузли — пари.
+    # елемент купи: (вага, tie-break, вузол). Лист — число-символ, внутрішній вузол — пара.
+    # tie-break (символ або лічильник >= 256) робить дерево детермінованим.
     heap = [(w, s, s) for s, w in sorted(freq.items())]
     heapq.heapify(heap)
     next_id = 256
@@ -44,36 +44,33 @@ def code_lengths(data: bytes, max_len: int = MAX_LEN) -> dict[int, int]:
         else:
             stack.append((node[0], depth + 1))
             stack.append((node[1], depth + 1))
-    if max(lengths.values()) > max_len:
-        lengths = _limit_lengths(lengths, max_len)
+    if max(lengths.values()) > max_len:             # дерево надто глибоке — будуємо обмежене
+        lengths = _package_merge(freq, max_len)
     return lengths
 
+def _package_merge(freq: dict[int, int], max_len: int) -> dict[int, int]:
+    """Оптимальні довжини кодів не довші за max_len (алгоритм package-merge).
 
-def _limit_lengths(lengths: dict[int, int], max_len: int) -> dict[int, int]:
-    """Обмеження довжини до max_len (процедура JPEG, ITU T.81 Annex K.3).
-
-    Пара листів із найглибшого рівня піднімається, а найглибший коротший лист
-    опускається на рівень і стає їхнім сусідом: сума Крафта лишається рівно 1,
-    символи не зливаються. Потім довжини роздаються заново: частіші символи
-    (коротші в оптимальному дереві) отримують коротші коди.
+    Кожен символ — «монета» вагою freq. На кожному з max_len рівнів сусідні
+    пари найлегших елементів склеюються в «пакети», які додаються до монет.
+    З підсумкового списку беремо 2n-2 найлегших елементів; довжина коду
+    символу — скільки разів він у них зустрівся.
     """
-    # ponytail: евристика, не оптимальна за довжиною; package-merge, якщо втрата помітна
-    deepest = max(lengths.values())
-    bl = [0] * (deepest + 1)
-    for n in lengths.values():
-        bl[n] += 1
-    for i in range(deepest, max_len, -1):
-        while bl[i] > 0:
-            j = i - 2
-            while bl[j] == 0:
-                j -= 1
-            bl[i] -= 2
-            bl[i - 1] += 1
-            bl[j + 1] += 2
-            bl[j] -= 1
-    order = iter(sorted(lengths, key=lambda s: (lengths[s], s)))
-    return {next(order): n for n in range(1, max_len + 1) for _ in range(bl[n])}
-
+    syms = sorted(freq, key=lambda s: (freq[s], s))      # детермінований порядок
+    n = len(syms)
+    if n > 1 << max_len:
+        raise HuffmanError(f"{n} символів не вміщаються в коди довжиною до {max_len}")
+    leaves = [(freq[s], (s,)) for s in syms]
+    cur = leaves
+    for _ in range(max_len - 1):
+        packages = [(cur[i][0] + cur[i + 1][0], cur[i][1] + cur[i + 1][1])
+                    for i in range(0, len(cur) - 1, 2)]
+        cur = sorted(leaves + packages, key=lambda item: item[0])
+    lengths: dict[int, int] = {}
+    for _, members in cur[:2 * n - 2]:
+        for s in members:
+            lengths[s] = lengths.get(s, 0) + 1
+    return lengths
 
 def check_lengths(lengths: dict[int, int]) -> None:
     """HuffmanError, якщо таблиця не задає коректний канонічний код."""
@@ -88,11 +85,11 @@ def check_lengths(lengths: dict[int, int]) -> None:
     elif len(lengths) >= 2:
         kraft = sum(1 << (MAX_LEN - n) for n in lengths.values())
         if kraft != 1 << MAX_LEN:
-            raise HuffmanError(f"сума Крафта {kraft / (1 << MAX_LEN)} != 1")
+            raise HuffmanError("сума Крафта не дорівнює 1")
 
 
 def canonical_codes(lengths: dict[int, int]) -> dict[int, tuple[int, int]]:
-    """symbol -> (code, length) стандартним алгоритмом bl_count/next_code."""
+    """symbol -> (code, length) алгоритмом bl_count / next_code (RFC 1951 §3.2.2)."""
     check_lengths(lengths)
     bl_count = [0] * (MAX_LEN + 1)
     for n in lengths.values():
@@ -109,55 +106,54 @@ def canonical_codes(lengths: dict[int, int]) -> dict[int, tuple[int, int]]:
         next_code[n] += 1
     return codes
 
-
 def encode(data: bytes, lengths: dict[int, int]) -> bytes:
-    """Біти MSB-first, останній байт доповнено нулями."""
+    """Стискає data. Біти йдуть від старшого до молодшого, останній байт добиваємо нулями."""
     codes = canonical_codes(lengths)
-    table = {s: format(c, f"0{n}b") for s, (c, n) in codes.items()}
-    try:
-        bits = "".join(table[b] for b in data)
-    except KeyError as e:
-        raise HuffmanError(f"символу {e} нема в таблиці") from None
-    if not bits:
+    bits = []
+    for b in data:
+        if b not in codes:
+            raise HuffmanError(f"символу {b} немає в таблиці")
+        code, n = codes[b]
+        bits.append(format(code, f"0{n}b"))
+    stream = "".join(bits)
+    if not stream:
         return b""
-    bits += "0" * (-len(bits) % 8)
-    return int(bits, 2).to_bytes(len(bits) // 8, "big")
+    stream += "0" * (-len(stream) % 8)               # padding нулями до цілого байта
+    return int(stream, 2).to_bytes(len(stream) // 8, "big")
 
 
 def decode(bitstream: bytes, lengths: dict[int, int], symbol_count: int) -> bytes:
-    """Рівно symbol_count символів; потік має бути спожитий до останнього байта,
-    padding — лише нулі, зайвий повний байт — помилка (bad_07_extra_bitstream)."""
+    """Розпаковує рівно symbol_count символів. Будь-яка вада потоку — HuffmanError."""
     codes = canonical_codes(lengths)
     if symbol_count == 0:
         if bitstream:
-            raise HuffmanError("зайві байти після порожнього потоку")
+            raise HuffmanError("зайві байти після порожніх даних")
         return b""
     if not codes:
-        raise HuffmanError("порожня таблиця для непорожнього потоку")
-    lookup = {(n, c): s for s, (c, n) in codes.items()}
-    bits = bin(int.from_bytes(bitstream, "big"))[2:].zfill(8 * len(bitstream)) if bitstream else ""
+        raise HuffmanError("порожня таблиця, а символи очікуються")
+    by_code = {(n, c): s for s, (c, n) in codes.items()}   # (довжина, код) -> символ
+    bits = "".join(format(byte, "08b") for byte in bitstream)
     out = bytearray()
-    pos = code = n = 0
-    total = len(bits)
+    pos = 0                                           # скільки бітів вже прочитано
+    code = n = 0                                      # код, що зараз складаємо, і його довжина
     while len(out) < symbol_count:
-        if pos >= total:
-            raise HuffmanError("обрізаний потік")
-        code = (code << 1) | (bits[pos] == "1")
+        if pos >= len(bits):
+            raise HuffmanError("потік обрізаний")
+        code = (code << 1) | int(bits[pos])
         pos += 1
         n += 1
-        s = lookup.get((n, code))
-        if s is not None:
-            out.append(s)
+        if (n, code) in by_code:
+            out.append(by_code[(n, code)])
             code = n = 0
         elif n >= MAX_LEN:
-            raise HuffmanError("неіснуючий код")
+            raise HuffmanError("такого коду немає в таблиці")
     if (pos + 7) // 8 != len(bitstream):
-        raise HuffmanError("зайві байти після закодованих даних")
+        raise HuffmanError("зайвий байт після закодованих даних")
     if "1" in bits[pos:]:
-        raise HuffmanError("ненульовий padding")
+        raise HuffmanError("padding має складатися з нулів")
     return bytes(out)
 
 
 def encoded_bits(data: bytes, lengths: dict[int, int]) -> int:
-    """Скільки бітів займе data з цією таблицею (вага w_i для ДП)."""
+    """Скільки бітів займуть дані (без padding). Це вага запису для ДП."""
     return sum(lengths[b] for b in data)
