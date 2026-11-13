@@ -171,7 +171,7 @@ def run(scenario: str, seed: int | None = None, params: Params | None = None, *,
     failed = recovered is None or rec_crit == 0
     Q = 0.0 if failed else cfg.alpha * S + cfg.beta * R + cfg.gamma * T
     return RunResult(S, R, T, Q, b_ref, b_stored, rec_crit, len(critical), seconds,
-                     assigned, placed, written, rejected, ok, 0.0 if failed else Q - cfg.gamma * T)
+                     assigned, placed, written, rejected, ok, 0.0 if failed else cfg.alpha * S + cfg.beta * R)
 
 
 class FitnessCache:
