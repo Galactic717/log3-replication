@@ -7,6 +7,7 @@ from log3.pipeline import load_session
 from log3.planner.knapsack import base_value, solve_dp, solve_greedy, total, utility_table
 from log3.planner.scheduler import choose_copies
 
+
 def brute(util, cost, budget):
     """Перебір усіх комбінацій копій — еталон для малих задач."""
     best = 0.0

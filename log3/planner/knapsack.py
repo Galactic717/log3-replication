@@ -11,9 +11,15 @@ from ..config import Config
 from ..records import Record, pack_record
 
 
-def base_value(cls: int, critical: int, cfg: Config) -> float:
-    """Цінність запису: пріоритет його класу плюс бонус, якщо запис критичний."""
-    return cfg.priority[cls] + cfg.critical_bonus * critical
+def base_value(cls: int, critical: int, cfg: Config, critical_scale: float = 1.0) -> float:
+    """v_i = priority(class_i) + critical_bonus × [critical_i = 1] (FORMAT_SPEC §3.5).
+
+    critical_scale — множник бонусу, який може налаштувати ГА (1.0 — значення з конфігу).
+    Клас поза priority — помилка класифікатора, а не тиха нульова цінність.
+    """
+    if not 0 <= cls < len(cfg.priority):
+        raise ValueError(f"клас {cls} поза 0..{len(cfg.priority) - 1} (пріоритети з team_config)")
+    return cfg.priority[cls] + cfg.critical_bonus * critical_scale * critical
 
 
 def utility_table(values: list[float], second_factor: float, third_factor: float) -> list[list[float]]:
@@ -69,7 +75,7 @@ def solve_greedy(util: list[list[float]], cost: list[list[int]], budget: int) ->
     copies = [0] * len(util)
     spent = 0
     while True:
-        best_i, best_ratio = -1, -1.0
+        best_i, best_ratio = -1, 0.0
         for i, (u, c) in enumerate(zip(util, cost)):
             r = copies[i]
             if r + 1 >= len(u):                       # у запису вже максимум копій
@@ -78,6 +84,8 @@ def solve_greedy(util: list[list[float]], cost: list[list[int]], budget: int) ->
             if spent + extra_cost > budget:           # наступна копія не влазить
                 continue
             gain = u[r + 1] - u[r]
+            if gain <= 0:                             # копія без приросту корисності — марна витрата бітів
+                continue
             ratio = gain / extra_cost if extra_cost > 0 else float("inf")
             if ratio > best_ratio:                    # строго: за рівності лишається менший індекс
                 best_i, best_ratio = i, ratio
@@ -86,7 +94,7 @@ def solve_greedy(util: list[list[float]], cost: list[list[int]], budget: int) ->
         r = copies[best_i]
         spent += cost[best_i][r + 1] - cost[best_i][r]
         copies[best_i] = r + 1
-        
+
 
 def total(util: list[list[float]], cost: list[list[int]], copies: list[int]) -> tuple[float, int]:
     """(сумарна корисність, сумарні біти) для обраних копій — для перевірок і таблиць."""
