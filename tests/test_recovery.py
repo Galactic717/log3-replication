@@ -1,4 +1,5 @@
 from conftest import PASSWORD, SALT, make_records
+
 from log3.records import pack_record
 from log3.recovery import recover
 from log3.replica import build_replica
@@ -21,3 +22,13 @@ def test_dedup_sort_and_reject():
 def test_empty_and_wrong_password():
     assert recover([], PASSWORD) == ([], 0)
     assert recover([rep(make_records(2), 1)], "other") == ([], 1)
+
+
+def test_many_garbage_salts_do_not_cost_pbkdf2_each(monkeypatch):
+    import log3.recovery as rec
+    good = build_replica(make_records(3), PASSWORD, replica_group_id=0, batch_seq=0, salt=SALT)
+    garbage = [build_replica(make_records(1, seed=i), "other", replica_group_id=0, batch_seq=i,
+                             salt=bytes([i]) * 16) for i in range(1, 30)]
+    monkeypatch.setattr(rec, "MAX_SALTS", 4)
+    records, rejected = rec.recover([good, good, *garbage], PASSWORD)
+    assert len(records) == 3 and rejected == len(garbage)

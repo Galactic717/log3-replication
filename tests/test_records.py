@@ -2,8 +2,7 @@ import dataclasses
 
 import pytest
 
-from log3.records import (RECORD_SIZE, Record, load_records_csv, pack_record, pack_records,
-                          unpack_record, unpack_records)
+from log3.records import RECORD_SIZE, Record, load_records_csv, pack_record, pack_records, unpack_record, unpack_records
 
 R = Record(timestamp_ms=0x01020304, source_id=0x0506, event_code=0x0708, metric_value=-2,
            category=15, severity=7, critical=1, record_flags=3)
