@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import random
 from collections import Counter
-from typing import Callable
+from collections.abc import Callable
 
 KINDS = ("bitflip", "byte", "truncate", "extend", "swap")
 
@@ -40,7 +40,8 @@ def mutate(blob: bytes, kind: str, rng: random.Random) -> bytes:
             b[i], b[j] = b[j], b[i]
     else:
         raise ValueError(kind)
-    assert bytes(b) != blob
+    if bytes(b) == blob:                                   # не assert: під python -O він зникає
+        raise RuntimeError(f"мутація {kind} не змінила репліку")
     return bytes(b)
 
 

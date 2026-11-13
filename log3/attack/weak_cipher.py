@@ -45,11 +45,14 @@ def random_key(length: int, *, seed: int) -> bytes:
     return bytes(rng.randrange(256) for _ in range(length))
 
 
-def known_pairs(key: bytes, *, n_pairs: int, seed: int, records_per_pair: int = 4) -> list[tuple[bytes, bytes]]:
-    """Пари (відкритий текст, шифротекст): відкритий текст — упаковані записи журналу
-    (атака з відомим відкритим текстом: формат запису публічний, заголовки передбачувані)."""
-    from ..nn.data import dev_labeled_session
-    recs = dev_labeled_session(n_pairs * records_per_pair, seed)[0]
+def known_pairs(key: bytes, records, *, n_pairs: int, seed: int,
+                records_per_pair: int = 4) -> list[tuple[bytes, bytes]]:
+    """Пари (відкритий текст, шифротекст): відкритий текст — упаковані записи журналу з
+    випадкового місця records (атака з відомим відкритим текстом: формат запису публічний)."""
+    rng = random.Random(seed)
+    need = n_pairs * records_per_pair
+    lo = rng.randrange(max(len(records) - need, 0) + 1)
+    recs = records[lo:lo + need]
     out = []
     for k in range(n_pairs):
         p = pack_records(recs[k * records_per_pair:(k + 1) * records_per_pair])

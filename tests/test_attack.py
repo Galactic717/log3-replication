@@ -1,10 +1,10 @@
 """Модуль атаки: ГА відновлює ключ слабкого шифру; tamper-тест через будь-який receiver."""
 import pytest
+from conftest import PASSWORD, SALT, make_records
 
 from log3.attack import ga_recover_key, tamper_test
 from log3.attack.weak_cipher import decrypt, encrypt, known_pairs, random_key
 from log3.replica import as_receiver, build_replica
-from conftest import PASSWORD, SALT, make_records
 
 
 def test_weak_cipher_roundtrip():
@@ -16,7 +16,7 @@ def test_weak_cipher_roundtrip():
 
 def test_attack_recovers_weak_key():
     key = random_key(8, seed=7)
-    pairs = known_pairs(key, n_pairs=4, seed=7)
+    pairs = known_pairs(key, make_records(64, seed=7), n_pairs=4, seed=7)
     res = ga_recover_key(pairs, seed=0)
     assert res.key == key
     assert res.fitness == 1.0
@@ -43,7 +43,9 @@ def test_tamper_all_rejected(blob):
 
 def test_tamper_is_receiver_agnostic(blob):
     """Модуль не імпортує наш parse_replica: працює з будь-яким receiver(blob) -> код | None."""
-    naive = lambda b: None if b[:4] == b"LOG3" else "E_MAGIC"          # поганий приймач
+    def naive(b):                                                   # поганий приймач
+        return None if b[:4] == b"LOG3" else "E_MAGIC"
+
     stats = tamper_test(blob, naive, trials=200, seed=1)
     assert stats["accepted"] > 0                       # тест виявляє, що приймач пропускає зміни
     assert stats["trials"] == stats["accepted"] + stats["rejected"]
