@@ -1,54 +1,60 @@
 {
-  "_note": "DEV-ЗАГЛУШКА, не файл викладача. Значення 48/1024/5000/1.55/1.85 і список ознак — з FORMAT_SPEC_P3 та методички; решта вигадані для налагодження. Справжній конфіг — materials/team_config.json (має пріоритет). dev_* — параметри log3/devsim.py, поки нема replication.py.",
-  "replication_window_records": 48,
-  "max_batch_bytes": 1024,
-  "replication_budget_bits": 5000,
-  "priority": [1.0, 3.0, 6.0],
-  "critical_bonus": 4.0,
-  "second_copy_factor": 1.55,
-  "third_copy_factor": 1.85,
-  "reliability_weight": {
-    "A": 0.95,
-    "B": 0.85,
-    "C": 0.7
-  },
-  "alpha": 0.3,
-  "beta": 0.5,
-  "gamma": 0.2,
-  "t_ref": 2.0,
-  "F1_min": 0.6,
-  "temporal_features": ["delta_metric", "events_per_window", "category_changes", "source_changes", "severity_mean"],
-  "password": "log3-dev-password",
-  "c1_degraded_max_unrecovered_critical": 0.1,
-  "c1_time_limit_s": 60,
-  "dev_session": {
-    "records": 960,
-    "seed": 2026
-  },
-  "dev_scenarios": {
-    "normal": {
-      "global_budget_bytes": 200000,
-      "nodes": {
-        "A": {"capacity_bytes": 100000, "p_good_to_bad": 0.0, "mean_burst": 1, "p_fail_bad": 1.0},
-        "B": {"capacity_bytes": 100000, "p_good_to_bad": 0.0, "mean_burst": 1, "p_fail_bad": 1.0},
-        "C": {"capacity_bytes": 100000, "p_good_to_bad": 0.0, "mean_burst": 1, "p_fail_bad": 1.0}
-      }
-    },
-    "degraded": {
-      "global_budget_bytes": 34000,
-      "nodes": {
-        "A": {"capacity_bytes": 14000, "p_good_to_bad": 0.15, "mean_burst": 2, "p_fail_bad": 0.85},
-        "B": {"capacity_bytes": 13000, "p_good_to_bad": 0.2, "mean_burst": 2, "p_fail_bad": 0.85},
-        "C": {"capacity_bytes": 12000, "p_good_to_bad": 0.25, "mean_burst": 3, "p_fail_bad": 0.85}
-      }
-    },
-    "emergency": {
-      "global_budget_bytes": 20000,
-      "nodes": {
-        "A": {"capacity_bytes": 9000, "p_good_to_bad": 0.25, "mean_burst": 4, "p_fail_bad": 1.0},
-        "B": {"capacity_bytes": 8000, "p_good_to_bad": 0.3, "mean_burst": 5, "p_fail_bad": 1.0},
-        "C": {"capacity_bytes": 7000, "p_good_to_bad": 0.35, "mean_burst": 6, "p_fail_bad": 1.0}
+  "_note": "DEV-конфіг для CI і запуску без пакета викладача. Схема ключів = materials/team_config.json; значення округлені, пароль — dev. Справжній конфіг має пріоритет.",
+  "команда": "dev",
+  "seed": 1,
+  "версія_формату": 1,
+  "пароль_сеансу": "log3-dev-password",
+  "метрика_Q": {"alpha": 0.35, "beta": 0.5, "gamma": 0.15, "t_ref_секунд": 30.0},
+  "реплікація": {
+    "replication_window_records": 48,
+    "max_batch_bytes": 1024,
+    "replication_budget_bits": 5000,
+    "second_copy_factor": 1.55,
+    "third_copy_factor": 1.85,
+    "class_table_у_задачі": 0,
+    "seed_моделі_реплікації": 1,
+    "сценарії": {
+      "штатний": {
+        "global_replication_budget_bytes": 42000,
+        "вузли": {
+          "A": {"capacity_bytes": 42000, "failure_probability": 0.0, "mean_failure_burst": 1, "reliability_weight": 1.0},
+          "B": {"capacity_bytes": 42000, "failure_probability": 0.005, "mean_failure_burst": 1, "reliability_weight": 0.995},
+          "C": {"capacity_bytes": 42000, "failure_probability": 0.01, "mean_failure_burst": 1, "reliability_weight": 0.99}
+        }
+      },
+      "деградований": {
+        "global_replication_budget_bytes": 29000,
+        "вузли": {
+          "A": {"capacity_bytes": 23000, "failure_probability": 0.04, "mean_failure_burst": 1.5, "reliability_weight": 0.96},
+          "B": {"capacity_bytes": 23000, "failure_probability": 0.055, "mean_failure_burst": 1.5, "reliability_weight": 0.945},
+          "C": {"capacity_bytes": 23000, "failure_probability": 0.07, "mean_failure_burst": 1.5, "reliability_weight": 0.93}
+        }
+      },
+      "аварійний": {
+        "global_replication_budget_bytes": 20000,
+        "вузли": {
+          "A": {"capacity_bytes": 12000, "failure_probability": 0.15, "mean_failure_burst": 2, "reliability_weight": 0.85},
+          "B": {"capacity_bytes": 12000, "failure_probability": 0.18, "mean_failure_burst": 3, "reliability_weight": 0.82},
+          "C": {"capacity_bytes": 12000, "failure_probability": 0.2, "mean_failure_burst": 4, "reliability_weight": 0.8}
+        }
       }
     }
+  },
+  "пріоритети_класів": {"штатна подія": 1, "аномальна подія": 5, "перехід до інциденту": 4},
+  "critical_bonus": 5,
+  "пороги_втрати_критичних_подій": {"штатний": 0.0, "деградований": 0.1, "аварійний": 0.45},
+  "ліміт_часу_повного_прогону_секунд": 180,
+  "класифікатор": {
+    "F1_min": 0.56,
+    "класи": {"0": "штатна подія", "1": "аномальна подія", "2": "перехід до інциденту"},
+    "мінімальні_часові_ознаки": [
+      "інтервал до попередньої події",
+      "кількість подій у ковзному вікні часу",
+      "кількість змін category у вікні",
+      "кількість різних source_id у вікні",
+      "частка пар подій із сусідніми event_code у вікні",
+      "зміна metric_value відносно попередньої події того самого джерела",
+      "severity"
+    ]
   }
 }
