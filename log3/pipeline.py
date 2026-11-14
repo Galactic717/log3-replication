@@ -4,7 +4,8 @@ session -> класи (перцептрон) -> v_i -> таблиця Гаффм
         -> AES-256-CTR + HMAC -> replication.py (store) -> відмови
         -> репліки, що вижили -> приймання -> дедуплікація -> S, R, T, Q
 
-    S = B_ref / (B_ref + B_stored),  B_ref = 16·N (FORMAT_SPEC §1),  B_stored = 8·global_used_bytes
+    S = B_ref / (B_ref + B_stored),  B_ref = 16·N байтів,  B_stored = 8·global_used_bytes бітів
+    Це чинне обчислення зі змішаними одиницями; питання до умови — docs/DECISIONS.md (2026-11-14).
     R = частка критичних подій, які відновлено
     T = t_ref / (t_ref + t),  t — час повного прогону
     Q = α·S + β·R + γ·T;  Q = 0, якщо відновлювач упав або не відновив жодної критичної.
@@ -53,8 +54,8 @@ class RunResult:
     R: float
     T: float
     Q: float
-    b_ref: int
-    b_stored: int
+    b_ref: int                       # байти сирих записів; чинну формулу S збережено
+    b_stored: int                    # біти списаних спроб запису, включно з BAD
     recovered_critical: int
     total_critical: int
     seconds: float
