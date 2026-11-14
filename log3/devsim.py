@@ -50,7 +50,9 @@ class Replication:
         return [b for n in self._nodes.values() for b in n["blobs"]]
 
     def stats(self) -> dict:
-        return {"global_used_bytes": self.global_used, "global_budget_bytes": self.global_budget}
+        return {"global_used_bytes": self.global_used, "global_budget_bytes": self.global_budget,
+                "вузли": {name: {"used_bytes": n["used"], "capacity_bytes": n["cap"]}
+                         for name, n in self._nodes.items()}}
 
 
 def synthetic_session(n: int, seed: int) -> list[Record]:
