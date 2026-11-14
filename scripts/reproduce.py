@@ -30,9 +30,18 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from log3 import huffman  # noqa: E402
-from log3.config import MATERIALS_CONFIG, load_config  # noqa: E402
+from log3.config import DEV_CONFIG, MATERIALS_CONFIG, default_config_path, load_config  # noqa: E402
+from log3.nn.classify import model_meta  # noqa: E402
 from log3.payload import build_payload  # noqa: E402
-from log3.pipeline import SCENARIOS, FitnessCache, default_params, run, tuned_params  # noqa: E402
+from log3.pipeline import (  # noqa: E402
+    REPLICATION_PY,
+    SCENARIOS,
+    SESSION_CSV,
+    FitnessCache,
+    default_params,
+    run,
+    tuned_params,
+)
 from log3.planner.knapsack import solve_dp, solve_greedy, total, utility_table  # noqa: E402
 from log3.planner.scheduler import choose_copies  # noqa: E402
 from log3.records import pack_records  # noqa: E402
@@ -58,11 +67,22 @@ C1 = [
 ]
 
 
+def environment_sources() -> dict[str, str]:
+    """Джерела, які тракт реально вибере, з урахуванням неповного пакета і LOG3_CONFIG."""
+    config_path = default_config_path().resolve()
+    config_source = ("materials" if config_path == MATERIALS_CONFIG.resolve()
+                     else "dev" if config_path == DEV_CONFIG.resolve() else "custom")
+    return {"config": config_source, "session": "materials" if SESSION_CSV.exists() else "dev",
+            "replication": "materials" if REPLICATION_PY.exists() else "dev"}
+
+
 def env_note() -> str:
-    if MATERIALS_CONFIG.exists():
-        return "Середовище: пакет викладача (`materials/`: team_config.json, replication.py, session.csv)."
-    return ("**Середовище: dev-конфіг і dev-модель реплікації (`log3/devsim.py`) — пакета викладача в "
-            "`materials/` нема. Числа ілюструють методику, не офіційний Q.**")
+    sources = environment_sources()
+    detail = "; ".join(f"{name}={source}" for name, source in sources.items())
+    if all(source == "materials" for source in sources.values()):
+        return f"Середовище: пакет викладача (`materials/`): {detail}. Seeds оцінки — власні, не приховані."
+    return (f"**Середовище: dev/змішане: {detail}. "
+            "Числа ілюструють методику, не офіційний Q.**")
 
 
 def fmt(v) -> str:
@@ -198,8 +218,11 @@ def main(skip_train: bool, skip_ga: bool) -> None:
     cache = FitnessCache(cfg)
     seeds = (cfg.model_seed, *range(201, 210))
     full, base = tuned_params(cfg), default_params(cfg)
+    sources = environment_sources()
     out: dict = {"eval_seeds": list(seeds), "records": len(cache.records), "params_full": full.__dict__,
-                 "params_config": base.__dict__, "dev_environment": not MATERIALS_CONFIG.exists()}
+                 "params_config": base.__dict__, "environment_sources": sources,
+                 "classifier_training_source": model_meta().get("data_source", "unknown"),
+                 "dev_environment": any(source != "materials" for source in sources.values())}
 
     text, out["c1"] = c1_status()
     (RESULTS / "c1.md").write_text(text, encoding="utf-8")
