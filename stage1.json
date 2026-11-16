@@ -1,0 +1,241 @@
+{
+  "stage": 1,
+  "title": "LOG3 Vault: файловий режим — захищене резервне копіювання й реплікація довільних файлів",
+  "date": "2026-11-16",
+  "status": "complete",
+  "package": "log3/vault",
+  "entry_point": "python -m log3.vault",
+  "docs": "docs/FILE_MODE.md",
+  "python": ">=3.11",
+  "dependencies_added": ["zstandard==0.25.0"],
+  "v1_preserved": {
+    "changed_v1_files": [],
+    "note": "Навчальний LOG3 v1 (формат реплік, pipeline, ДП, перцептрон, ГА, атака, результати, тести) не змінено. Файловий режим імпортує з v1 лише log3.huffman."
+  },
+  "commands": {
+    "init": "python -m log3.vault init --repo DIR [--min-copies N] [--chunk-size-mib X] [--retention-days D] [--keep-last K]",
+    "backend": "python -m log3.vault backend add NAME --type localdir --path DIR --domain D | --type node --url https://HOST:PORT --ca-file node.crt [--token-env ENV] --domain D ; backend list",
+    "backup": "python -m log3.vault backup SRC [--wait] [--timeout S] [--priority low|normal|high] [--op-id ID] [--name N]",
+    "run": "python -m log3.vault run [--once] [--timeout S]",
+    "list": "python -m log3.vault list",
+    "status": "python -m log3.vault status [VERSION]",
+    "verify": "python -m log3.vault verify [VERSION]",
+    "restore": "python -m log3.vault restore VERSION DEST [--path P] [--overwrite]",
+    "repair": "python -m log3.vault repair [--all-backends] [--no-run] [--timeout S]",
+    "gc": "python -m log3.vault gc [--apply]",
+    "recover": "python -m log3.vault recover --repo NEW_DIR NAME --type localdir|node ... --domain D",
+    "serve-node": "python -m log3.vault serve-node --data DIR --cert node.crt --key node.key [--host H] [--port P] [--quota-bytes N]",
+    "node-cert": "python -m log3.vault node-cert --dir DIR --host NAME_OR_IP",
+    "common_options": ["--repo DIR (або LOG3_VAULT_REPO)", "--json"],
+    "tests": "python -m pytest -q",
+    "lint": "ruff check log3/vault tests"
+  },
+  "exit_codes": {
+    "0": "OK", "1": "ERROR", "2": "USAGE", "3": "NOT_PROTECTED", "4": "ATTENTION", "5": "CAPACITY",
+    "6": "POLICY", "7": "INTEGRITY", "8": "KEY", "9": "PARTIAL", "10": "NOT_FOUND"
+  },
+  "json_output": {
+    "envelope": {"ok": "bool", "command": "str", "exit_code": "int", "exit_name": "str"},
+    "version": {
+      "version_id": "32 hex", "operation_id": "str", "name": "str", "source_root": "str",
+      "state": "CAPTURING|ACCEPTED_LOCAL|REPLICATING|PROTECTED|DEGRADED|FAILED|DELETED",
+      "protection_level": "capturing|accepted_local|replicating|protected|degraded|failed|deleted",
+      "policy_satisfied": "bool; true лише в стані PROTECTED",
+      "locally_accepted": "bool",
+      "copies": {"objects_total": "int", "objects_under_replicated": "int", "confirmed_copies_min": "int", "min_copies": "int"},
+      "jobs_needing_attention": "int", "files": "int", "bytes": "int", "skipped_files": "int", "error": "str|null",
+      "created_at": "RFC 3339 UTC", "accepted_at": "RFC 3339 UTC|null", "protected_at": "RFC 3339 UTC|null",
+      "retention_until": "RFC 3339 UTC|null"
+    },
+    "error": {"code": "E_*", "message": "str"}
+  },
+  "interfaces": {
+    "KeyProvider": {
+      "module": "log3.vault.cryptobox",
+      "members": ["key_id: str", "data_key(key_id: str) -> bytes", "id_key() -> bytes"],
+      "stage1_implementation": "PassphraseKeys(passphrase: bytes, kdf: dict)",
+      "purpose": "посилення керування ключами (KMS, ротація, обгортання) без змін файлового тракту"
+    },
+    "CryptoBox": {
+      "module": "log3.vault.cryptobox",
+      "members": ["object_id(kind, plain) -> str", "content_id(sha256_digest) -> str",
+                  "seal(kind, oid, codec_id, plain_len, payload) -> bytes", "open(blob, kind, oid) -> (codec_id, plain_len, payload)"]
+    },
+    "Codec registry": {
+      "module": "log3.vault.codecs",
+      "registry": {"0": "store v1", "1": "zstd v1", "2": "huffman-log3 v1 (експериментальний)"},
+      "members": ["encode_best(data, codec_id, level) -> (codec_id, payload)", "decode(codec_id, payload, plain_len) -> bytes"],
+      "rule": "ідентифікатор не перевикористовується; payload не коротший за дані -> store"
+    },
+    "Backend": {
+      "module": "log3.vault.backends.base",
+      "members": ["put(oid, src, length, sha256, op_id) -> Ack", "stat(oid, rehash=True) -> Ack|None", "get(oid, dest)",
+                  "delete(oid)", "put_meta(name, data)", "get_meta(name) -> bytes|None", "delete_meta(name)", "list_meta() -> list[str]"],
+      "Ack": {"oid": "str", "length": "int", "sha256": "str", "durability": "str", "duplicate": "bool"},
+      "implementations": {"localdir": "log3.vault.backends.localdir.LocalDirBackend", "node": "log3.vault.backends.node_client.NodeBackend"}
+    },
+    "CompressionAdvisor": {
+      "module": "log3.vault.advisor",
+      "members": ["recommend(context: CompressionContext) -> Recommendation", "observe(outcome: CompressionOutcome) -> None"],
+      "CompressionContext": {
+        "operation_id": "str", "version_id": "str", "path_suffix": "str", "file_size_bytes": "int", "chunk_index": "int",
+        "chunk_len_bytes": "int", "head": "bytes (16)", "sample_entropy_bits": "float 0..8", "default_codec": "str", "default_level": "int"
+      },
+      "Recommendation": {"codec": "store|zstd|huffman-log3", "level": "int 0..19"},
+      "CompressionOutcome": {
+        "operation_id": "str", "version_id": "str", "object_id": "str", "path_suffix": "str", "chunk_index": "int",
+        "codec_requested": "str", "codec_used": "str", "raw_len_bytes": "int", "stored_len_bytes": "int", "encode_ns": "int",
+        "advisor_failed": "bool"
+      },
+      "enable": "config.json: compression.advisor = \"package.module:Class\" (клас без аргументів)",
+      "baseline": "BaselineAdvisor: уже стиснені розширення або ентропія вибірки > 7.5 біт/байт -> store; інакше кодек із конфігурації",
+      "guarantees": [
+        "виняток, невідомий кодек або відсутній модуль -> базова політика; backup не блокується",
+        "restore advisor не викликає й не імпортує",
+        "advisor не керує видаленням, ключами, retention і кількістю копій",
+        "observe викликається лише для нових блоків (дедупліковані блоки не стискаються)"
+      ]
+    }
+  },
+  "state_model": {
+    "version_states": {
+      "CAPTURING": "дані читаються; нічого не обіцяно",
+      "ACCEPTED_LOCAL": "блоки й маніфест стійко в локальному spool і каталозі; політику копій НЕ виконано",
+      "REPLICATING": "черга передає об'єкти; політику ще не виконано",
+      "PROTECTED": "кожен блок і маніфест мають підтверджені копії в >= min_copies доменах відмов",
+      "DEGRADED": "політику не виконано, автоматичних спроб не лишилось; дані доступні для restore",
+      "FAILED": "версію не прийнято",
+      "DELETED": "прибрано gc після retention"
+    },
+    "transitions": {
+      "CAPTURING": ["ACCEPTED_LOCAL", "FAILED"],
+      "ACCEPTED_LOCAL": ["REPLICATING", "PROTECTED", "DEGRADED"],
+      "REPLICATING": ["PROTECTED", "DEGRADED"],
+      "PROTECTED": ["DEGRADED", "REPLICATING", "DELETED"],
+      "DEGRADED": ["REPLICATING", "PROTECTED", "DELETED"],
+      "FAILED": ["DELETED"],
+      "DELETED": []
+    },
+    "job_states": {"PENDING": "чекає своєї черги або повтору", "RUNNING": "взято з lease", "DONE": "підтвердження backend перевірено", "ATTENTION": "бюджет повторів вичерпано"},
+    "replica_states": ["CONFIRMED", "MISSING", "CORRUPT"],
+    "enforced_by": "log3.vault.states.TRANSITIONS + Catalog.set_state"
+  },
+  "acknowledgement_guarantees": {
+    "accepted_local": "зафіксовано одну транзакцію SQLite (synchronous=FULL) після fsync усіх файлів spool; джерело більше не потрібне; це не виконання політики копій",
+    "sent": "не є станом і ніде не записується",
+    "backend_ack": "після fsync(file)+rename+fsync(dir) на POSIX (Windows: FlushFileBuffers+атомарне перейменування); містить oid, довжину, SHA-256 збережених байтів; приймається лише при збігу всіх трьох із поточним об'єктом",
+    "protected": "усі блоки та маніфест версії мають CONFIRMED-копії в >= min_copies різних доменах відмов",
+    "delivery": "щонайменше одна доставка + ідемпотентне приймання; job_id = uuid5(repo_id, oid:backend), стабільний між перезапусками",
+    "failure_classes": {
+      "process_crash": "покрито; перевірено тестами в нових процесах (os._exit у точках аварії)",
+      "power_loss": "покрито за умови чесного fsync ОС і носія; ФІЗИЧНО НЕ ПЕРЕВІРЕНО",
+      "local_disk_loss": "версії PROTECTED відновлюються з backend-а командою recover; версії до PROTECTED можуть бути втрачені",
+      "backend_loss": "verify виявляє, repair відновлює з цілої копії"
+    }
+  },
+  "data_schemas": {
+    "object": "magic 'L3FB' | format_version u8 = 1 | kind u8 (1 блок, 2 маніфест) | codec u8 | key_id 8B | nonce 12B | plain_len u64 BE | AES-256-GCM(payload) | tag 16B; AAD = заголовок 35B || object_id 32B",
+    "object_id": "HMAC-SHA256(K_id, kind || відкриті байти), 64 hex",
+    "manifest": {
+      "format": "log3-file-manifest", "format_version": 1,
+      "fields": ["version_id", "operation_id", "repo_id", "name", "created_at_ns", "created_at", "source{root,kind}", "chunk_size_bytes",
+                 "crypto{suite,key_id,object_format_version}", "codecs{id:{name,version}}",
+                 "entries[{path,type,file_id,content_id,size,mtime_ns,mode}]", "contents{content_id:{size,sha256,chunks[]}}",
+                 "objects{object_id:{plain_len,stored_len,sha256,codec}}", "skipped[{path,reason}]"],
+      "encoding": "канонічний JSON UTF-8 -> zstd -> об'єкт kind=2"
+    },
+    "identities": {"content_id": "HMAC від SHA-256 вмісту", "file_id": "UUID, стабільний між версіями й перейменуваннями (за inode)", "path": "відносний, роздільник '/'", "version_id": "32 hex"},
+    "time": "цілі наносекунди від 1970-01-01 UTC (*_ns) + RFC 3339",
+    "catalog_sqlite": {
+      "pragmas": ["journal_mode=WAL", "synchronous=FULL", "busy_timeout=60000", "BEGIN IMMEDIATE на кожну зміну", "wal_checkpoint(TRUNCATE) після публікації та роботи черги"],
+      "tables": ["meta", "files", "objects", "versions", "version_objects", "replicas", "jobs", "events"],
+      "schema": "log3/vault/catalog.py: SCHEMA, schema_version = 1"
+    },
+    "backend_layout": {"objects": "objects/<oid[0:2]>/<oid>", "meta": ["meta/repo-config.json", "meta/version-<version_id>.json"], "marker": "log3-backend.json"},
+    "node_http_api": ["PUT /v1/objects/<oid>", "GET /v1/objects/<oid>", "DELETE /v1/objects/<oid>", "GET /v1/stat/<oid>?rehash=0|1",
+                      "PUT|GET|DELETE /v1/meta/<name>", "GET /v1/meta", "GET /v1/info"],
+    "node_security": "TLS >= 1.2, клієнт перевіряє закріплений сертифікат і ім'я вузла; Authorization: Bearer <токен>, порівняння за сталий час"
+  },
+  "configuration": {
+    "file": "<repo>/config.json",
+    "secrets_in_file": false,
+    "example": {
+      "format": "log3-vault-config", "format_version": 1, "chunk_size_bytes": 1048576,
+      "crypto": {"suite": "AES-256-GCM", "kdf": {"name": "scrypt", "n": 32768, "r": 8, "p": 1}, "passphrase_env": "LOG3_VAULT_PASSPHRASE"},
+      "compression": {"codec": "zstd", "level": 3, "advisor": null},
+      "policy": {"min_copies": 2, "extra_copies_high_priority": 1, "retention_days": 30, "keep_last": 3},
+      "limits": {"queue_max_jobs": 200000, "spool_max_bytes": 21474836480, "min_free_bytes": 268435456, "max_parallel": 4,
+                 "max_attempts": 8, "backoff_base_seconds": 2.0, "backoff_cap_seconds": 600.0, "lease_seconds": 900.0,
+                 "capture_stale_seconds": 300.0},
+      "backends": [
+        {"name": "disk", "type": "localdir", "path": "/mnt/usb/log3", "failure_domain": "usb-disk"},
+        {"name": "node", "type": "node", "url": "https://backup.example.org:8443", "ca_file": "/etc/log3/node.crt",
+         "token_env": "LOG3_NODE_TOKEN", "failure_domain": "office-2"}
+      ]
+    },
+    "environment": {
+      "LOG3_VAULT_PASSPHRASE | LOG3_VAULT_PASSPHRASE_FILE": "парольна фраза сховища (backup, restore, recover, init)",
+      "LOG3_NODE_TOKEN | LOG3_NODE_TOKEN_FILE": "токен вузла (клієнт і serve-node)",
+      "LOG3_VAULT_REPO": "каталог сховища замість --repo",
+      "LOG3_VAULT_CRASHPOINT, LOG3_VAULT_FAULT": "лише для тестів: точки аварії процесу й загублена відповідь вузла"
+    }
+  },
+  "metrics": {
+    "source": "python -m log3.vault status --json -> metrics",
+    "fields": ["queue_jobs", "queue_capacity_jobs", "queue_attention_jobs", "queue_oldest_job_age_seconds", "spool_bytes",
+               "spool_capacity_bytes", "spool_disk_free_bytes", "spool_disk_min_free_bytes", "max_parallel_transfers",
+               "versions_by_state", "under_replicated_versions", "last_time_to_protected_seconds",
+               "avg_time_to_protected_seconds", "job_errors_total", "advisor_errors_total", "last_verify_at",
+               "last_restore_duration_seconds", "measured_at"]
+  },
+  "verification": {
+    "environment": "Linux x86_64, Python 3.13.18, SQLite із стандартної бібліотеки, cryptography 50.0.1, zstandard 0.25.0",
+    "command": "python -m pytest -q",
+    "result": {"passed": 197, "skipped": 5, "failed": 0, "skipped_reason": "тести v1, яким потрібен пакет викладача materials/"},
+    "file_mode_tests": {"unit": 39, "end_to_end_in_new_processes": 15},
+    "lint": "ruff check log3/vault tests — без зауважень; наявне зауваження B008 у log3/nn/train.py (v1) не чіпали",
+    "scenarios": {
+      "restart_after_local_accept": "test_restart_after_local_accept_and_source_disappears",
+      "source_disappears_after_capture": "test_restart_after_local_accept_and_source_disappears",
+      "lost_response_after_successful_write": "test_lost_response_after_durable_write_is_idempotent",
+      "crash_between_block_write_and_catalog": "test_crash_between_block_write_and_catalog_update",
+      "crash_after_remote_write_before_ack_recorded": "test_crash_after_remote_write_before_ack_is_recorded",
+      "queue_and_disk_overflow": "test_queue_and_disk_overflow_refuse_before_acceptance",
+      "node_failure_return_corruption": "test_node_down_then_back_then_corrupted",
+      "operation_repeat": "test_repeated_operation_and_incremental_backup",
+      "large_file_restore_bounded_ram": "test_large_file_restore_with_bounded_memory (192 МіБ, приріст пікової RSS < 48 МіБ)",
+      "unicode_empty_same_content": "test_backup_replicate_verify_restore",
+      "same_disk_not_independent": "test_same_disk_is_not_two_copies_and_min_copies_is_hard",
+      "local_disk_loss": "test_recover_after_local_disk_loss",
+      "restore_safety": "test_restore_refuses_overwrite_symlinks_and_wrong_key",
+      "retention_gc": "test_gc_respects_retention_keep_last_and_live_objects",
+      "advisor_hook": "test_huffman_codec_and_custom_advisor_hook",
+      "file_changed_during_read": "test_file_changing_during_read_is_skipped_not_stored_torn",
+      "fair_queue": "test_fair_queue_low_priority_is_not_starved"
+    },
+    "not_verified": [
+      "фізична втрата живлення (тести аварії процесу її не замінюють)",
+      "робота на Windows і macOS (CI лише ubuntu)",
+      "файли понад кілька ГіБ, мільйони файлів, тривала робота вузла під навантаженням"
+    ]
+  },
+  "known_limitations": [
+    "Гарантія при втраті живлення спирається на fsync ОС і носія; фізично не перевірено.",
+    "Узгоджене резервування активних баз даних не заявляється: файл, що змінюється під час читання, пропускається (код 9); потрібен snapshot або інтеграція із застосунком.",
+    "Блоки фіксованого розміру: вставка на початку файла зсуває наступні блоки, дедуплікація для них не спрацює.",
+    "Маніфест версії цілком у пам'яті (приблизно 150-200 Б на блок і на файл).",
+    "Symlink, junction і спеціальні файли джерела пропускаються; власники, ACL і розширені атрибути не зберігаються.",
+    "Один ключ даних на сховище; ротація потребує нової реалізації KeyProvider. Випадковий nonce AES-GCM: один ключ << 2^32 об'єктів.",
+    "Покажчики версій і repo-config.json лежать на backend-ах відкрито (без секретів і без імен файлів); конфігурація оновлюється там разом із маніфестом наступної версії.",
+    "Домен відмов мережевого вузла задає оператор; два розділи одного фізичного диска автоматично не розпізнаються.",
+    "Публікація restore атомарна для файла, не для набору; захист від symlink не усуває гонку з локальним зловмисником.",
+    "Мережевий backend — власний HTTPS-вузол зі спільним токеном; S3-сумісного backend-а нема.",
+    "Один процес gc одночасно із захопленням не запускається (gc відмовляє з E_BUSY).",
+    "Фоновий демон не входить в етап: чергу обробляють backup --wait або run (планувальник ОС)."
+  ],
+  "handoff": {
+    "next_stage": "Артем: навчання — реалізувати CompressionAdvisor і підключити через compression.advisor",
+    "storage_complete": true,
+    "do_not_change_without_format_bump": ["формат об'єкта L3FB v1", "маніфест log3-file-manifest v1", "ідентифікатори кодеків 0..2", "схема каталогу v1", "exit codes"]
+  }
+}

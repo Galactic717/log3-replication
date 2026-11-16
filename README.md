@@ -101,6 +101,27 @@ S, R і `static_q`, що не містить шуму таймера.
 Формулу збережено до уточнення визначення `B_ref` у методичці; її не слід трактувати як звичайну
 частку економії байтів. Деталі й відкрите питання — у `docs/DECISIONS.md` за 2026-11-14.
 
+## Файловий режим (LOG3 Vault)
+
+Окремий від навчального тракту продукт у `log3/vault/`: захищене резервне копіювання й реплікація
+довільних файлів (PDF, DOCX, архіви, виконувані — будь-які байти) без навчальної вибірки. Навчальний
+LOG3 v1 вище не змінено.
+
+```bash
+export LOG3_VAULT_PASSPHRASE='довга парольна фраза' LOG3_VAULT_REPO=./vault-repo
+python -m log3.vault init --min-copies 1
+python -m log3.vault backend add disk --type localdir --path /mnt/other-disk/log3 --domain other-disk
+python -m log3.vault backup ~/Documents --wait     # код 0 лише коли рівень protected
+python -m log3.vault restore latest ./restored
+```
+
+Тракт: читання → блоки → стиснення (Store / Zstandard / Гаффман LOG3) → AES-256-GCM → стійкий spool і
+черга в SQLite → реплікація на локальний каталог і віддалений вузол (HTTPS, токен, закріплений
+сертифікат) → перевірка → відновлення через staging. Стан версії явний: `accepted_local` не означає
+`protected`. Команди, модель станів, гарантії, формати, межі й обмеження —
+[docs/FILE_MODE.md](docs/FILE_MODE.md); машинозчитуваний опис етапу — [stage1.json](stage1.json).
+Точка розширення для навчання — `CompressionAdvisor` у `log3/vault/advisor.py`.
+
 ## Структура
 
 ```
@@ -118,6 +139,8 @@ log3/
   nn/            features.py, mlp.py (власний MLP, backprop, Adam/SGD), train.py, classify.py, data.py
   ga/            ga.py (турнір, BLX-α, мутація, елітизм), search.py (random search, експеримент)
   attack/        weak_cipher.py, key_search.py (ГА відновлює ключ), tamper.py, __main__.py (звіт)
+  vault/         файловий режим: формат об'єктів і маніфест, крипто, кодеки, каталог і черга SQLite,
+                 backend-и (каталог, HTTPS-вузол), захоплення, реплікація, verify/repair/gc, restore, CLI
 tests/           pytest: формат, крипто, еталонні пакети, ДП проти перебору, планувальник, тракт, NN, ГА, атака
 scripts/         reproduce.py
 results/         C1, таблиці звіту 1–6, матриця помилок, журнал і графік ГА, атака, final_metrics.json
