@@ -88,17 +88,23 @@ def dev_labeled_session(n: int, seed: int) -> tuple[list[Record], list[int]]:
     return recs, labels
 
 
-def load_split(name: str) -> tuple[list[Record], list[int], str]:
-    """('train'|'valid'|'test') -> (записи, мітки, джерело 'materials' | 'dev').
+SPLIT_ALIASES = {"valid": "validation"}
 
-    test — розмічений session.csv: у виборі моделі не бере участі, тому його macro-F1 —
-    чесна оцінка якості (valid уже використано для вибору епохи, seed і гіперпараметрів)."""
-    path: Path = {"train": TRAIN_CSV, "valid": VALID_CSV, "test": TEST_CSV}[name]
+
+def load_split(name: str) -> tuple[list[Record], list[int], str]:
+    """('train'|'validation'|'test') -> (записи, мітки, джерело 'materials' | 'dev').
+
+    validation (файл valid.csv) — набір ВІДБОРУ: за ним обирають епоху, seed і гіперпараметри, тому
+    його macro-F1 оптимістичний. test — розмічений session.csv: у виборі моделі не бере участі,
+    його macro-F1 — чесна оцінка. Джерело повертається для КОЖНОЇ частини окремо: якщо одного
+    CSV бракує, саме ця частина буде синтетичною, і train.py це перевіряє."""
+    name = SPLIT_ALIASES.get(name, name)
+    path: Path = {"train": TRAIN_CSV, "validation": VALID_CSV, "test": TEST_CSV}[name]
     if path.exists():
         recs, labels = load_records_csv(path)
         if labels is None:
             raise ValueError(f"{path}: нема колонки мітки класу")
         return recs, labels, "materials"
-    n, seed = {"train": DEV_TRAIN, "valid": DEV_VALID, "test": DEV_TEST}[name]
+    n, seed = {"train": DEV_TRAIN, "validation": DEV_VALID, "test": DEV_TEST}[name]
     recs, labels = dev_labeled_session(n, seed)
     return recs, labels, "dev"
