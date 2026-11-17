@@ -1,4 +1,4 @@
-"""Вимірювання LOG3 Vault у нових процесах CLI:  python scripts/vault_bench.py baseline
+"""Вимірювання LOG3 Vault у нових процесах CLI:  python scripts/vault_bench.py baseline|adaptive
 
 Сценарій baseline (відправна точка етапу 2): init -> backend-и (локальний каталог + HTTPS-вузол
 окремим процесом) -> backup без --wait (лише локальне приймання; процес завершується, як після
@@ -6,6 +6,12 @@
 
 Кожна команда — новий процес, тож час включає старт інтерпретатора. CPU і пікова RSS — дочірніх
 процесів (resource.RUSAGE_CHILDREN). Дані — синтетичний корпус scripts/vault_corpus.py.
+
+Сценарій adaptive: однакове навантаження в окремих сховищах для гілок навчання off / defaults /
+accelerated; щораунду backup -> run (run виконує крок циклу навчання), між раундами змінюються файли.
+Наприкінці — verify, restore, втрата 10 % копій на диску бенчмарку і repair. Порівнюються байти,
+CPU, затримка підтвердження захисту, черга, RSS, час restore і repair; для accelerated додається
+фінальний звіт відбору (Store, фіксований кодек, база, навчені, ГА проти random search).
 """
 from __future__ import annotations
 
@@ -156,24 +162,252 @@ def baseline(scale_mib: float, seed: int, tmp: Path, max_file_kib: int = 512) ->
     }
 
 
+#: гілки порівняння: однакове навантаження, різні налаштування навчання
+ARMS = {
+    "off": {"enabled": False},
+    "defaults": {"enabled": True, "train": {"min_interval_seconds": 0}},
+    "accelerated": {"enabled": True,
+                    "probe": {"rate": 1.0, "max_chunks_per_operation": 100000, "max_cpu_seconds_per_operation": 60,
+                              "max_cpu_fraction": 4, "max_load_per_cpu": 100},
+                    "train": {"min_interval_seconds": 0, "min_rows": 100, "min_groups": 10},
+                    "gate": {"min_shadow_decisions": 50}},
+}
+
+
+def _sql(db: Path, q: str, args: tuple = ()):
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(q, args).fetchall()
+    finally:
+        con.close()
+
+
+def _arm(name: str, learning: dict, tmp: Path, scale_mib: float, seed: int, rounds: int, chunk_mib: float,
+         max_file_kib: int) -> dict:
+    b = Bench(tmp)
+    src = tmp / "src"
+    make_corpus(src, seed, scale_mib, max_file_kib)
+    b.setup(chunk_mib=chunk_mib)
+    b.configure("learning", **learning)
+    cat = b.repo / "catalog.sqlite"
+    per_round, events = [], []
+    try:
+        for r in range(rounds):
+            n0 = len(b.steps)
+            vid = b.cli(f"backup r{r}", "backup", src)["version"]["version_id"]
+            queued = _sql(cat, "SELECT COUNT(*) FROM jobs WHERE state IN ('PENDING','RUNNING')")[0][0]
+            run = b.cli(f"run r{r}", "run")
+            lat = _sql(cat, "SELECT (protected_ns - accepted_ns) / 1e9 FROM versions WHERE version_id=?", (vid,))[0][0]
+            new = _sql(cat, "SELECT COUNT(*), COALESCE(SUM(o.stored_len),0), COALESCE(SUM(o.plain_len),0) "
+                       "FROM objects o WHERE o.kind=1 AND o.created_ns=(SELECT created_ns FROM versions "
+                       "WHERE version_id=?)", (vid,))[0]
+            lr = run.get("learning") or {}
+            tr = lr.get("train") or {}
+            ev = lr.get("evaluate") or {}
+            events.append({"round": r, "train": tr.get("status"), "selected": tr.get("selected"),
+                           "gate_gain": (tr.get("gate") or {}).get("gain"),
+                           "evaluate": ev.get("status"), "evaluate_passed": ev.get("passed"),
+                           "shadow_gain": ev.get("gain"), "shadow_rows": ev.get("probed_shadow_rows"),
+                           "promote": (lr.get("promote") or {}).get("status"),
+                           "health": (lr.get("health") or {}).get("status"),
+                           "train_cpu_seconds": (tr.get("resources") or {}).get("cpu_seconds")})
+            per_round.append({"round": r, "backup_wall_seconds": b.steps[n0]["wall_seconds"],
+                              "backup_cpu_seconds": b.steps[n0]["cpu_seconds"],
+                              "run_wall_seconds": b.steps[n0 + 1]["wall_seconds"],
+                              "run_cpu_seconds": b.steps[n0 + 1]["cpu_seconds"], "queue_after_backup": queued,
+                              "time_to_protected_seconds": lat, "new_chunks": new[0], "new_stored_bytes": new[1],
+                              "new_plain_bytes": new[2]})
+            mutate(src, seed * 100 + r, 0.3, 0.1)
+        b.cli("verify", "verify")
+        t0 = time.perf_counter()
+        b.cli("restore", "restore", "latest", tmp / "out")
+        restore_s = time.perf_counter() - t0
+        objs = sorted(p for p in (tmp / "disk" / "objects").rglob("*") if p.is_file())
+        for p in objs[::10]:                                # втрата 10 % копій на диску бенчмарку (не замовника)
+            p.unlink()
+        b.cli("verify after loss", "verify", check=False)
+        t0 = time.perf_counter()
+        b.cli("repair", "repair")
+        repair_s = time.perf_counter() - t0
+        status = b.cli("learn status", "learn", "status")["learning"] if learning.get("enabled") else None
+        final_train = None
+        if name == "accelerated":
+            final_train = b.cli("learn train (final report)", "learn", "train", "--force", check=False)
+    finally:
+        b.stop_node()
+    totals = _sql(cat, "SELECT COALESCE(SUM(stored_len),0), COALESCE(SUM(plain_len),0) FROM objects WHERE kind=1")[0]
+    lat = [x["time_to_protected_seconds"] for x in per_round]
+    out = {"learning": learning, "rounds": per_round, "lifecycle": events,
+           "totals": {"stored_bytes": totals[0], "plain_bytes": totals[1],
+                      "stored_to_plain": round(totals[0] / max(1, totals[1]), 5),
+                      "backup_cpu_seconds": round(sum(x["backup_cpu_seconds"] for x in per_round), 3),
+                      "run_cpu_seconds": round(sum(x["run_cpu_seconds"] for x in per_round), 3),
+                      "backup_wall_seconds": round(sum(x["backup_wall_seconds"] for x in per_round), 3),
+                      "time_to_protected_p50_seconds": round(float(sorted(lat)[len(lat) // 2]), 3),
+                      "time_to_protected_max_seconds": round(max(lat), 3),
+                      "queue_after_backup_max": max(x["queue_after_backup"] for x in per_round),
+                      "restore_latest_seconds": round(restore_s, 3),
+                      "repair_after_10pct_loss_seconds": round(repair_s, 3),
+                      "children_max_rss_kib": max(st["children_max_rss_kib"] for st in b.steps)},
+           "steps": b.steps}
+    if status is not None:
+        out["learning_status"] = {k: status.get(k) for k in ("state", "journal", "overhead_last_20_operations",
+                                                             "models", "learning_errors_total")}
+    if final_train is not None:
+        out["final_train_report"] = final_train.get("learning")
+    return out
+
+
+def adaptive(scale_mib: float, seed: int, tmp: Path, *, rounds: int, chunk_mib: float, max_file_kib: int,
+             arms: list[str]) -> dict:
+    out = {"scenario": "однакове навантаження (backup -> run щораунду, зміни файлів між раундами), гілки "
+                       "навчання: off — етап 1, defaults — типові налаштування, accelerated — прискорений збір",
+           "scale_mib": scale_mib, "rounds": rounds, "chunk_mib": chunk_mib, "seed": seed, "arms": {}}
+    for name in arms:
+        out["arms"][name] = _arm(name, ARMS[name], tmp / name, scale_mib, seed, rounds, chunk_mib, max_file_kib)
+    off = out["arms"].get("off")
+    if off:
+        for name, arm in out["arms"].items():
+            if name != "off":
+                a, o = arm["totals"], off["totals"]
+                out.setdefault("vs_off", {})[name] = {
+                    "stored_bytes_change": round(a["stored_bytes"] / o["stored_bytes"] - 1, 5),
+                    "backup_cpu_change": round(a["backup_cpu_seconds"] / o["backup_cpu_seconds"] - 1, 4),
+                    "run_cpu_change": round(a["run_cpu_seconds"] / o["run_cpu_seconds"] - 1, 4),
+                    "time_to_protected_p50_change_seconds": round(a["time_to_protected_p50_seconds"]
+                                                                  - o["time_to_protected_p50_seconds"], 3),
+                    "restore_seconds_change": round(a["restore_latest_seconds"] - o["restore_latest_seconds"], 3),
+                    "repair_seconds_change": round(a["repair_after_10pct_loss_seconds"]
+                                                   - o["repair_after_10pct_loss_seconds"], 3)}
+    return out
+
+
+
+def _f(x, nd=3):
+    return "—" if x is None else (f"{x:.{nd}f}" if isinstance(x, float) else str(x))
+
+
+def summary_md(res: dict, title: str) -> str:
+    """Markdown-звіт сценарію adaptive: гілки, шкода тракту, цикл, відбір кандидатів."""
+    arms, env = res["arms"], res["environment"]
+    lines = [f"# {title}", "",
+             f"Корпус {res['scale_mib']} МіБ (синтетичний, `scripts/vault_corpus.py`, seed {res['seed']}), "
+             f"{res['rounds']} раундів backup -> run, блок {res['chunk_mib']} МіБ; середовище: {env['platform']}, "
+             f"CPU {env['cpus']}, Python {env['python']}.", "",
+             "| гілка | байтів / вхід | CPU backup, с | CPU run, с | затримка захисту p50 / max, с | "
+             "черга після backup, max | restore, с | repair після втрати 10 %, с | пікова RSS, КіБ |",
+             "| :-- | --: | --: | --: | --: | --: | --: | --: | --: |"]
+    for n, a in arms.items():
+        t = a["totals"]
+        lines.append(f"| {n} | {t['stored_to_plain']:.4f} | {t['backup_cpu_seconds']:.2f} | "
+                     f"{t['run_cpu_seconds']:.2f} | {t['time_to_protected_p50_seconds']:.2f} / "
+                     f"{t['time_to_protected_max_seconds']:.2f} | {t['queue_after_backup_max']} | "
+                     f"{t['restore_latest_seconds']:.2f} | {t['repair_after_10pct_loss_seconds']:.2f} | "
+                     f"{t['children_max_rss_kib']} |")
+    for n, v in (res.get("vs_off") or {}).items():
+        lines += ["", f"**{n} проти off:** байти {v['stored_bytes_change']:+.2%}, CPU backup "
+                  f"{v['backup_cpu_change']:+.1%}, CPU run {v['run_cpu_change']:+.1%}, затримка захисту p50 "
+                  f"{v['time_to_protected_p50_change_seconds']:+.3f} с, restore {v['restore_seconds_change']:+.3f} с, "
+                  f"repair {v['repair_seconds_change']:+.3f} с."]
+    for n, a in arms.items():
+        ls = a.get("learning_status")
+        if not ls:
+            continue
+        o, st, jr = ls["overhead_last_20_operations"], ls["state"], ls["journal"]
+        lines += ["", f"## {n}: overhead і цикл", "",
+                  f"Ознаки {o['feature_ns_per_chunk'] / 1e3:.0f} мкс на блок; проби "
+                  f"{o['probe_cpu_seconds_per_gib']:.2f} CPU-с/ГіБ проти кодування "
+                  f"{o['encode_cpu_seconds_per_gib']:.2f} CPU-с/ГіБ; висновок {o['inference_ns_per_chunk'] / 1e3:.1f} "
+                  f"мкс на блок; fallback {o['fallbacks']}. Рішень у журналі {jr['decisions']}, з пробами "
+                  f"{jr['probed_decisions']}, помилок навчання {ls['learning_errors_total']}. Підсумковий режим: "
+                  f"**{st['mode']}**, активна модель {st['active_model'] or '—'}.", "",
+                  "| раунд | train | обрано | виграш на test | evaluate (виграш у shadow, рядків) | promote | health | "
+                  "CPU навчання, с |",
+                  "| --: | :-- | :-- | --: | :-- | :-- | :-- | --: |"]
+        for e in a["lifecycle"]:
+            ev = _f(e["evaluate"]) + ("" if e.get("shadow_gain") is None else
+                                      f" ({e['shadow_gain']:+.4f}, {e.get('shadow_rows')})")
+            lines.append(f"| {e['round']} | {_f(e['train'])} | {_f(e['selected'])} | {_f(e['gate_gain'], 4)} | "
+                         f"{ev} | {_f(e['promote'])} | {_f(e['health'])} | {_f(e['train_cpu_seconds'])} |")
+        ft = a.get("final_train_report")
+        if ft and ft.get("test"):
+            g, pv = ft["gate"], ft["provenance"]
+            lines += ["", f"### {n}: фінальний відбір кандидатів", "",
+                      f"Частини часово відокремлені, лінії файлів не перетинаються: train {pv['train']['rows']} "
+                      f"рядків / {pv['train']['groups']} груп, validation {pv['validation']['rows']} / "
+                      f"{pv['validation']['groups']}, test {pv['test']['rows']} / {pv['test']['groups']}; відкинуто "
+                      f"через перетин груп {pv['rows_dropped_group_overlap']}. Вартість — відносно оракула (1.0 — "
+                      "найдешевша дія для кожного блока); навчені кандидати платять overhead ознак, висновку й "
+                      "амортизованого навчання.", "",
+                      "| кандидат | validation | test | test без overhead | байтів / вхід (test) | "
+                      "CPU кодування, с/ГіБ (test) |",
+                      "| :-- | --: | --: | --: | --: | --: |"]
+            for name, t in ft["test"].items():
+                v = ft["validation"][name]
+                mark = " **(обрано)**" if name == ft["selected"] else ""
+                gross = t.get("cost_vs_oracle_without_overhead")
+                lines.append(f"| {name}{mark} | {v['cost_vs_oracle']:.4f} | {t['cost_vs_oracle']:.4f} | "
+                             f"{_f(gross, 4)} | {t['stored_to_raw']:.4f} | {t['encode_cpu_seconds_per_gib']:.3f} |")
+            ga, rs = ft["search"]["ga"], ft["search"]["random"]
+            checks = ", ".join(f"{k} {'✓' if v else '✗'}" for k, v in g["checks"].items())
+            lines += ["", f"ГА проти random search за однакового бюджету ({ga['evaluations']} оцінок кожен): "
+                      f"найкраща validation-вартість ГА {ga['validation_cost_vs_oracle']:.4f} ({ga['best_kind']}), "
+                      f"random search {rs['validation_cost_vs_oracle']:.4f} ({rs['best_kind']}).", "",
+                      f"Gate: {'пройдено' if g['passed'] else 'не пройдено'}; виграш над базою на test "
+                      f"{g['gain']:+.4f} (90 % bootstrap за групами {g['low']:+.4f} .. {g['high']:+.4f}, груп "
+                      f"{g['groups']}), поріг {g['min_relative_gain']}. Перевірки: {checks}."]
+    return "\n".join(lines) + "\n"
+
+
+def dump_json(obj, level: int = 0, max_level: int = 4) -> str:
+    """JSON із відступами лише на верхніх рівнях: рядок на раунд, крок чи кандидата, а не на кожне поле."""
+    pad = "  " * level
+    if level >= max_level or not isinstance(obj, dict | list) or not obj:
+        return json.dumps(obj, ensure_ascii=False)
+    if isinstance(obj, dict):
+        items = [f'{pad}  {json.dumps(str(k), ensure_ascii=False)}: {dump_json(v, level + 1, max_level)}'
+                 for k, v in obj.items()]
+        return "{\n" + ",\n".join(items) + f"\n{pad}}}"
+    return "[\n" + ",\n".join(f"{pad}  {dump_json(v, level + 1, max_level)}" for v in obj) + f"\n{pad}]"
+
+
 def environment() -> dict:
     return {"python": platform.python_version(), "platform": platform.platform(), "cpus": os.cpu_count()}
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("scenario", choices=("baseline",))
+    ap.add_argument("scenario", choices=("baseline", "adaptive", "summary"))
+    ap.add_argument("--input", type=Path, help="summary: JSON сценарію adaptive")
+    ap.add_argument("--md", type=Path, help="adaptive/summary: куди записати markdown-звіт")
+    ap.add_argument("--title", default="Навчання вибору стиснення: вимірювання на тракті")
     ap.add_argument("--scale-mib", type=float, default=32.0)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--max-file-kib", type=int, default=512)
+    ap.add_argument("--rounds", type=int, default=10)
+    ap.add_argument("--chunk-mib", type=float, default=0.25)
+    ap.add_argument("--arms", nargs="+", default=list(ARMS), choices=list(ARMS))
     ap.add_argument("--out", type=Path, help="куди записати JSON (типово stdout)")
     a = ap.parse_args(argv)
+    if a.scenario == "summary":
+        text = summary_md(json.loads(a.input.read_text(encoding="utf-8")), a.title)
+        if a.md:
+            a.md.write_text(text, encoding="utf-8")
+        print(text)
+        return 0
     with tempfile.TemporaryDirectory(prefix="log3-bench-") as d:
-        result = {"environment": environment(), **baseline(a.scale_mib, a.seed, Path(d), a.max_file_kib)}
-    text = json.dumps(result, ensure_ascii=False, indent=2)
+        if a.scenario == "baseline":
+            result = {"environment": environment(), **baseline(a.scale_mib, a.seed, Path(d), a.max_file_kib)}
+        else:
+            result = {"environment": environment(), **adaptive(a.scale_mib, a.seed, Path(d), rounds=a.rounds,
+                                                               chunk_mib=a.chunk_mib, max_file_kib=a.max_file_kib,
+                                                               arms=a.arms)}
+    text = dump_json(result)
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)
         a.out.write_text(text + "\n", encoding="utf-8")
+    if a.md and a.scenario == "adaptive":
+        a.md.write_text(summary_md(result, a.title), encoding="utf-8")
     print(text)
     return 0
 

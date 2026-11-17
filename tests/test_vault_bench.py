@@ -25,3 +25,16 @@ def test_baseline_backup_restart_verify_restore(tmp_path):
     assert r["restore_identical"]
     assert r["incremental"]["state"] == "PROTECTED"
     assert 0 < r["storage"]["ratio_stored_to_plain"] < 1
+
+
+def test_adaptive_scenario_compares_arms_and_reports(tmp_path):
+    res = vault_bench.adaptive(1.0, 4, tmp_path, rounds=2, chunk_mib=0.25, max_file_kib=64, arms=["off", "defaults"])
+    off, on = res["arms"]["off"]["totals"], res["arms"]["defaults"]["totals"]
+    assert off["stored_bytes"] > 0 and on["plain_bytes"] == off["plain_bytes"]
+    assert res["arms"]["defaults"]["learning_status"]["journal"]["decisions"] > 0
+    assert "defaults" in res["vs_off"]
+    res["environment"] = vault_bench.environment()
+    md = vault_bench.summary_md(res, "тест")
+    assert "| off |" in md and "defaults проти off" in md
+    import json
+    assert json.loads(vault_bench.dump_json(res)) == json.loads(json.dumps(res))
