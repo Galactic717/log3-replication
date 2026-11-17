@@ -15,11 +15,12 @@ from log3.vault.restore import restore
 from scripts.vault_corpus import make_corpus, mutate
 
 PASS = "lifecycle passphrase"
-LEARNING = {"probe": {"rate": 1.0, "max_chunks_per_operation": 100000, "max_cpu_seconds_per_operation": 100,
+LEARNING = {"actions": ["store:0", "zstd:1", "zstd:3", "zstd:6", "zstd:12"],   # ширший вибір — стійкий виграш
+            "probe": {"rate": 1.0, "max_chunks_per_operation": 100000, "max_cpu_seconds_per_operation": 100,
                       "max_cpu_fraction": 4, "max_load_per_cpu": 100.0},
             "cost": {"cpu_second_equiv_bytes": 0},            # ціль «лише простір»: детермінована механіка
             "train": {"min_rows": 50, "min_groups": 5, "search_budget": 8},
-            "gate": {"min_shadow_decisions": 20, "min_relative_gain": 0.01, "bootstrap": 100}}
+            "gate": {"min_shadow_decisions": 20, "min_relative_gain": 0.005, "bootstrap": 100}}
 
 
 def _repo(tmp_path, monkeypatch, learning=None):

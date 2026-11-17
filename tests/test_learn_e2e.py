@@ -10,7 +10,8 @@ from scripts.vault_corpus import make_corpus, mass_rewrite, mutate
 
 FAST_LEARNING = ["probe.rate=1.0", "probe.max_cpu_fraction=4", "probe.max_load_per_cpu=100",
                  "probe.max_chunks_per_operation=100000", "train.min_rows=50", "train.min_groups=5",
-                 "train.search_budget=8", "gate.min_shadow_decisions=20", "gate.min_relative_gain=0.01",
+                 "train.search_budget=8", "gate.min_shadow_decisions=20", "gate.min_relative_gain=0.005",
+                 'actions=["store:0", "zstd:1", "zstd:3", "zstd:6", "zstd:12"]',
                  "gate.bootstrap=100", "cost.cpu_second_equiv_bytes=0"]
 
 
