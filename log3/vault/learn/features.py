@@ -133,11 +133,10 @@ def magic_class(head: bytes) -> str:
         return "unknown"
 
 
-def _entropy(arr: np.ndarray) -> float:
-    if arr.size == 0:
+def _entropy(counts: np.ndarray, n: int) -> float:
+    if n == 0:
         return 0.0
-    p = np.bincount(arr, minlength=256)
-    p = p[p > 0] / arr.size
+    p = counts[counts > 0] / n
     return float(-(p * np.log2(p)).sum())
 
 
@@ -177,13 +176,13 @@ def extract(data: bytes, *, suffix: str, file_size: int, chunk_index: int, chunk
     v[_IDX["log2_chunk_len"]] = math.log2(n + 1) / 26
     v[_IDX["log2_file_size"]] = math.log2(max(file_size, n) + 1) / 40
     v[_IDX["chunk_position"]] = min(1.0, chunk_index * chunk_size / max(1, file_size))
-    v[_IDX["entropy_sample"]] = _entropy(sample) / 8
+    counts = np.bincount(sample, minlength=256)
+    v[_IDX["entropy_sample"]] = _entropy(counts, sample.size) / 8
     v[_IDX["entropy_head"]] = head_entropy_bits / 8
     if sample.size:
-        v[_IDX["distinct_bytes"]] = np.unique(sample).size / 256
-        v[_IDX["zero_bytes"]] = float((sample == 0).mean())
-        v[_IDX["printable_bytes"]] = float((((sample >= 32) & (sample < 127)) | (sample == 9) | (sample == 10)
-                                            | (sample == 13)).mean())
+        v[_IDX["distinct_bytes"]] = np.count_nonzero(counts) / 256
+        v[_IDX["zero_bytes"]] = counts[0] / sample.size
+        v[_IDX["printable_bytes"]] = (counts[32:127].sum() + counts[9] + counts[10] + counts[13]) / sample.size
     if sample.size >= 8:
         s = sample.astype(np.uint32)
         grams = s[:-3] | (s[1:-2] << 8) | (s[2:-1] << 16) | (s[3:] << 24)
