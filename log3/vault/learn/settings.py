@@ -41,6 +41,7 @@ DEFAULTS = {
     "drift": {"psi_freeze": 0.3, "check_every_chunks": 64, "min_chunks": 64, "high_entropy_jump": 0.4,
               "rewrite_fraction": 0.6},
     "journal": {"max_decisions": 200000},
+    "auto": {"enabled": True, "promote": True, "max_models": 10},
 }
 MODES = ("baseline", "shadow", "active")
 STATE_FORMAT = "log3-learn-state"
@@ -99,7 +100,8 @@ class LearnDir:
 def default_state() -> dict:
     return {"format": STATE_FORMAT, "format_version": STATE_VERSION, "mode": "baseline", "paused": False,
             "disabled": False, "frozen": False, "freeze_reason": None, "active_model": None, "candidate_model": None,
-            "last_good_model": None, "last_train_ns": 0, "updated_ns": 0, "history": []}
+            "candidate_set_ns": 0, "candidate_eval": None, "last_good_model": None, "active_since_ns": 0,
+            "last_train_ns": 0, "updated_ns": 0, "history": []}
 
 
 def load_state(d: LearnDir) -> tuple[dict, str | None]:
