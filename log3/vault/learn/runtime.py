@@ -103,6 +103,9 @@ class LearnRuntime(NullRuntime):
                                 "known_files", "known_changed"), 0)
         self.quarantine = 0
         self.reference = self._reference()
+        last = self.journal.scalar("SELECT MAX(finished_ns) FROM operations") or 0
+        if self.started < last - 60 * 10**9:               # підозріла телеметрія: годинник ОС пішов назад
+            self._quarantine(f"час ОС на {(last - self.started) / 1e9:.0f} с раніше за попередню операцію")
 
     # ---- ініціалізація -------------------------------------------------------------------------
     def _load(self, model_id: str | None, *, quiet: bool = False):

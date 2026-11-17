@@ -46,6 +46,24 @@ FRACTIONS = (0.6, 0.8)                       # межі train | validation | tes
 SIMPLICITY = ("store", "fixed", "baseline", "costtable", "ridge", "mlp")
 LEARNED = ("costtable", "ridge", "mlp")
 SEARCH_BOUNDS = {"family": (0.0, 1.999), "min_count_log2": (0.0, 7.0), "l2_log10": (-3.0, 3.0)}
+DRIFT_FEATURES = ("probe_ratio", "entropy_sample", "log2_chunk_len")
+DRIFT_BINS = np.linspace(0.0, 1.0, 11)
+
+
+def histograms(X: np.ndarray) -> dict[str, list[float]]:
+    """Еталонний розподіл ключових ознак (частки по 10 кошиках) для перевірки drift."""
+    out = {}
+    for name in DRIFT_FEATURES:
+        h, _ = np.histogram(np.clip(X[:, F.index(name)], 0, 1), bins=DRIFT_BINS)
+        out[name] = (h / max(1, h.sum())).tolist()
+    return out
+
+
+def psi(ref: list[float], cur: list[float]) -> float:
+    """Population Stability Index: Σ (p - q) ln(p / q) зі згладжуванням порожніх кошиків."""
+    p, q = np.asarray(ref) + 1e-4, np.asarray(cur) + 1e-4
+    p, q = p / p.sum(), q / q.sum()
+    return float(((q - p) * np.log(q / p)).sum())
 
 
 def _ctx(repo) -> tuple[dict, LearnDir, dict, CostModel]:
@@ -307,8 +325,9 @@ def train(repo, *, force: bool = False) -> dict:
             model_id = save_artifact(d.models, sel["policy"], {
                 "status": "candidate" if passed else "rejected", "created_ns": now_ns(),
                 "config": {k: s[k] for k in ("actions", "cost", "train", "gate")},
-                "provenance": prov, "metrics": {"validation": sel["validation"], "test": test[name],
-                                                "gate": report["gate"], "overhead": overhead}})
+                "provenance": prov, "reference": histograms(D["X"][tr]),
+                "metrics": {"validation": sel["validation"], "test": test[name], "gate": report["gate"],
+                            "overhead": overhead}})
             report["model_id"] = model_id
         st, _ = load_state(d)
         st["last_train_ns"] = now_ns()
@@ -459,6 +478,13 @@ def health(repo) -> dict:
     errors = repo.cat.scalar("SELECT COALESCE(SUM(value),0) FROM events WHERE kind='learning_errors' AND ts_ns>?",
                              (since,))
     out = {"status": "healthy", "active_model": mid, "learning_errors": errors, "probed_rows": int(len(D["X"]))}
+    drift = _feature_drift(repo, d, mid, since, s)
+    if drift is not None:
+        out["feature_psi"] = drift["psi"]
+        if drift["max"] > s["drift"]["psi_freeze"]:
+            reason = f"drift ознак: PSI {drift['max']:.2f} > {s['drift']['psi_freeze']}"
+            set_flags(repo, "freeze", frozen=True, freeze_reason=reason)   # активну модель не використовуємо
+            return out | {"status": "frozen", "reason": reason}
     reasons = []
     if errors:
         reasons.append(f"помилки навчання в тракті: {errors}")
@@ -481,6 +507,29 @@ def health(repo) -> dict:
         out["status"] = "rolled_back"
         out["rollback"] = rollback(repo, "; ".join(reasons))
     return out
+
+
+def _feature_drift(repo, d: LearnDir, model_id: str, since: int, s: dict) -> dict | None:
+    """PSI між еталоном навчальних даних моделі й ознаками рішень після активації."""
+    try:
+        _, doc = load_artifact(d.models, model_id, admissible=s["actions"])
+        ref = doc.get("reference")
+    except ModelError:
+        return None
+    if not ref:
+        return None
+    j = Journal(d.journal)
+    try:
+        rows = j.q("SELECT features FROM decisions WHERE decided_ns>? AND feature_schema=? AND quarantine=0 "
+                   "ORDER BY decided_ns DESC LIMIT 5000", (since, F.schema_id()))
+    finally:
+        j.close()
+    if len(rows) < s["drift"]["min_chunks"]:
+        return None
+    from .journal import unpack
+    cur = histograms(np.stack([unpack(r[0]) for r in rows]))
+    values = {k: psi(ref[k], cur[k]) for k in DRIFT_FEATURES if k in ref}
+    return {"psi": values, "max": max(values.values(), default=0.0)}
 
 
 def _log(d: LearnDir, kind: str, model_id: str | None, detail: str) -> None:
