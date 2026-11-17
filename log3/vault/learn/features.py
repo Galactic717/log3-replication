@@ -17,6 +17,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass
 
@@ -26,7 +27,9 @@ import zstandard
 FEATURE_SCHEMA = "log3-chunk-features"
 FEATURE_VERSION = 1
 WINDOW = 4096
-PROBE_WINDOW = 16384
+PROBE_WINDOW = 8192
+GRAM_BYTES = 2048                 # з кожного вікна для 4-грам
+_local = threading.local()
 
 TYPE_CLASSES = {
     "text": "txt md log rst ini cfg conf rtf",
@@ -59,10 +62,10 @@ NUMERIC = (
     ("entropy_sample", "ентропія Шеннона трьох вікон по 4 КіБ, біт/байт / 8"),
     ("entropy_head", "ентропія перших 4 КіБ блока (як у базовій політиці) / 8"),
     ("distinct_bytes", "частка різних значень байта у вибірці"),
-    ("repeat_4gram", "частка повторюваних 4-грам у вибірці (повторюваність)"),
+    ("repeat_4gram", "частка повторюваних 4-грам у перших 2 КіБ кожного вікна (повторюваність)"),
     ("zero_bytes", "частка нульових байтів у вибірці"),
     ("printable_bytes", "частка друкованих ASCII і пробільних байтів у вибірці"),
-    ("probe_ratio", "виміряна стисливість: zstd-1 на 2 вікнах по 16 КіБ, вихід/вхід"),
+    ("probe_ratio", "виміряна стисливість: zstd-1 на 2 вікнах по 8 КіБ, вихід/вхід"),
     ("probe_log_ns_per_byte", "log10 часу пробного стиснення, нс/байт (швидкість машини зараз)"),
     ("lineage_known", "1, якщо файл уже бачили в попередніх версіях"),
     ("lineage_versions", "log1p(скільки версій бачили) / 5"),
@@ -83,7 +86,8 @@ def schema() -> dict:
     return {"schema": FEATURE_SCHEMA, "version": FEATURE_VERSION, "names": list(NAMES),
             "definitions": dict(NUMERIC) | {f"type_{t}": f"клас розширення {t}" for t in TYPE_NAMES}
             | {f"magic_{m}": f"клас сигнатури {m}" for m in MAGIC_NAMES},
-            "type_classes": TYPE_CLASSES, "window_bytes": WINDOW, "probe_window_bytes": PROBE_WINDOW}
+            "type_classes": TYPE_CLASSES, "window_bytes": WINDOW, "probe_window_bytes": PROBE_WINDOW,
+            "gram_bytes": GRAM_BYTES}
 
 
 def schema_id() -> str:
@@ -153,8 +157,11 @@ def probe_compressibility(data: bytes) -> tuple[float, float]:
     sample = b"".join(_windows(data, PROBE_WINDOW, 2))
     if not sample:
         return 1.0, 0.0
+    comp = getattr(_local, "zstd1", None)
+    if comp is None:                                   # компресор не потокобезпечний: свій на потік
+        comp = _local.zstd1 = zstandard.ZstdCompressor(level=1)
     t0 = time.perf_counter_ns()
-    out = zstandard.ZstdCompressor(level=1).compress(sample)
+    out = comp.compress(sample)
     dt = max(1, time.perf_counter_ns() - t0)
     return min(1.5, len(out) / len(sample)), math.log10(dt / len(sample))
 
@@ -184,7 +191,8 @@ def extract(data: bytes, *, suffix: str, file_size: int, chunk_index: int, chunk
         v[_IDX["zero_bytes"]] = counts[0] / sample.size
         v[_IDX["printable_bytes"]] = (counts[32:127].sum() + counts[9] + counts[10] + counts[13]) / sample.size
     if sample.size >= 8:
-        s = sample.astype(np.uint32)
+        s = sample.reshape(-1, WINDOW)[:, :GRAM_BYTES].ravel() if sample.size == 3 * WINDOW else sample[:GRAM_BYTES]
+        s = s.astype(np.uint32)
         grams = s[:-3] | (s[1:-2] << 8) | (s[2:-1] << 16) | (s[3:] << 24)
         v[_IDX["repeat_4gram"]] = 1.0 - np.unique(grams).size / grams.size
     v[_IDX["probe_ratio"]], v[_IDX["probe_log_ns_per_byte"]] = probe_compressibility(data)

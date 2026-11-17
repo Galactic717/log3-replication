@@ -195,10 +195,11 @@ class LearnRuntime(NullRuntime):
             a = self.actions_of(self.model)[int(self.model.choose(x)[0])]
             inf_ns = time.perf_counter_ns() - t0
             model_key, chosen = a.key, Recommendation(a.codec, a.level)
-        elif self.shadow is not None and self.mode == "shadow":
+        shadow_key = None
+        if self.shadow is not None and np.isfinite(x).all():
             t0 = time.perf_counter_ns()                    # shadow: рекомендація записується, рішення не змінює
-            model_key = self.actions_of(self.shadow)[int(self.shadow.choose(x)[0])].key
-            inf_ns = time.perf_counter_ns() - t0
+            shadow_key = self.actions_of(self.shadow)[int(self.shadow.choose(x)[0])].key
+            inf_ns += time.perf_counter_ns() - t0
         if fallback:
             self.t["fallbacks"] += 1
         known = fv.get("lineage_known") > 0
@@ -211,8 +212,9 @@ class LearnRuntime(NullRuntime):
              "version_id": self.version_id, "object_id": oid, "chunk_index": ctx.chunk_index,
              "group_key": file_key or "", "decided_ns": decided, "feature_schema": F.schema_id(),
              "features": pack(fv.values), "mask": fv.mask.tobytes(), "feature_ns": fv.cost_ns, "inference_ns": inf_ns,
-             "mode": self.mode if not fallback else "baseline", "model_id": self.model_id or self.shadow_id,
+             "mode": self.mode if not fallback else "baseline", "model_id": self.model_id,
              "policy_action": policy_key, "model_action": model_key, "chosen_action": chosen_key,
+             "shadow_model": self.shadow_id if shadow_key else None, "shadow_action": shadow_key,
              "fallback": fallback, "probe_p": self.s["probe"]["rate"] if self.probe_on else 0.0,
              "quarantine": self.quarantine, "published": 1}
         self.t["chunks"] += 1
@@ -334,7 +336,7 @@ class LearnRuntime(NullRuntime):
                 self.journal.update_lineage(self.lineage_updates, now_ns())
             self.journal.write_operation({
                 "version_id": self.version_id, "operation_id": self.op_id, "started_ns": self.started,
-                "finished_ns": now_ns(), "mode": self.mode, "model_id": self.model_id or self.shadow_id,
+                "finished_ns": now_ns(), "mode": self.mode, "model_id": self.model_id,
                 "published": int(published), "chunks": self.t["chunks"], "probes": self.t["probes"],
                 "probe_cpu_ns": self.t["probe_cpu_ns"], "feature_ns": self.t["feature_ns"],
                 "inference_ns": self.t["inference_ns"], "encode_cpu_ns": self.t["encode_cpu_ns"],

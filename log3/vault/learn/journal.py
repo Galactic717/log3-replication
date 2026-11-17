@@ -8,7 +8,7 @@ hash від file_id), числові ознаки й виміряні витра
 Таблиці:
   decisions   одне рішення про блок: operation/decision ID, час рішення, версія схеми ознак,
               модель і режим, доступні ознаки (вектор + маска), дія політики, дія моделі,
-              обрана дія, імовірність проби (для оцінки зміщення вибірки)
+              обрана дія, shadow-рекомендація кандидата (на рішення не впливає), імовірність проби
   outcomes    фактичний результат кодування обраною дією: байти, час, CPU; час результату
   probes      пробні вимірювання інших допустимих дій на тому самому блоці (повна інформація)
   stages      стадії захисту, зібрані з каталогу пізніше; кожна — окремий факт із власним часом:
@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS decisions(
   chunk_index INTEGER NOT NULL, group_key TEXT NOT NULL, decided_ns INTEGER NOT NULL, feature_schema TEXT NOT NULL,
   features BLOB NOT NULL, mask BLOB NOT NULL, feature_ns INTEGER NOT NULL, inference_ns INTEGER NOT NULL,
   mode TEXT NOT NULL, model_id TEXT, policy_action TEXT NOT NULL, model_action TEXT, chosen_action TEXT NOT NULL,
-  fallback TEXT, probe_p REAL NOT NULL, quarantine INTEGER NOT NULL DEFAULT 0, published INTEGER NOT NULL DEFAULT 1);
+  shadow_model TEXT, shadow_action TEXT, fallback TEXT, probe_p REAL NOT NULL,
+  quarantine INTEGER NOT NULL DEFAULT 0, published INTEGER NOT NULL DEFAULT 1);
 CREATE INDEX IF NOT EXISTS decisions_time ON decisions(decided_ns);
 CREATE INDEX IF NOT EXISTS decisions_object ON decisions(object_id);
 CREATE INDEX IF NOT EXISTS decisions_version ON decisions(version_id);
@@ -156,10 +157,12 @@ class Journal:
                 cur = self.db.execute(
                     "INSERT OR IGNORE INTO decisions(decision_id, operation_id, version_id, object_id, chunk_index, "
                     "group_key, decided_ns, feature_schema, features, mask, feature_ns, inference_ns, mode, model_id, "
-                    "policy_action, model_action, chosen_action, fallback, probe_p, quarantine, published) "
+                    "policy_action, model_action, chosen_action, shadow_model, shadow_action, fallback, probe_p, "
+                    "quarantine, published) "
                     "VALUES(:decision_id,:operation_id,:version_id,:object_id,:chunk_index,:group_key,:decided_ns,"
                     ":feature_schema,:features,:mask,:feature_ns,:inference_ns,:mode,:model_id,:policy_action,"
-                    ":model_action,:chosen_action,:fallback,:probe_p,:quarantine,:published)", d)
+                    ":model_action,:chosen_action,:shadow_model,:shadow_action,:fallback,:probe_p,:quarantine,"
+                    ":published)", d)
                 dup += cur.rowcount == 0
             for o in outcomes:
                 cur = self.db.execute(
@@ -277,25 +280,28 @@ class Journal:
 
     # ---- навчальна вибірка ------------------------------------------------------------------
     def labeled(self, *, feature_schema: str, actions: list[str], until_ns: int | None = None,
-                include_quarantine: bool = False, max_rows: int = 50000) -> dict:
+                since_ns: int | None = None, include_quarantine: bool = False, max_rows: int = 50000) -> dict:
         """Блоки з повною інформацією: для кожної допустимої дії є виміряний результат (проба або
         фактичний outcome). Лише такі приклади не залежать від того, яку дію обрала попередня
         політика (проби вибираються за hash(object_id), незалежно від ознак і рішення)."""
         q = ("SELECT d.decision_id, d.group_key, d.decided_ns, d.features, d.mask, d.chosen_action, d.probe_p, "
+             "d.policy_action, d.shadow_action, d.shadow_model, d.feature_ns, "
              "o.raw_len, o.action, o.payload_len, o.cpu_ns FROM decisions d JOIN outcomes o ON "
              "o.decision_id=d.decision_id WHERE d.feature_schema=? AND d.probe_p>0 "
              + ("" if include_quarantine else "AND d.quarantine=0 ")
              + ("AND d.decided_ns<=? " if until_ns else "")
+             + ("AND d.decided_ns>? " if since_ns else "")
              + "AND EXISTS(SELECT 1 FROM probes p WHERE p.decision_id=d.decision_id) "
              "ORDER BY d.decided_ns DESC LIMIT ?")
-        rows = self.q(q, (feature_schema, *((until_ns,) if until_ns else ()), max_rows))[::-1]
+        args = (feature_schema, *((until_ns,) if until_ns else ()), *((since_ns,) if since_ns else ()), max_rows)
+        rows = self.q(q, args)[::-1]
         k = len(actions)
         X = np.zeros((len(rows), N_FEATURES), dtype=np.float32)
         M = np.zeros((len(rows), N_FEATURES), dtype=bool)
         pay = np.full((len(rows), k), np.nan)
         cpu = np.full((len(rows), k), np.nan)
         raw = np.zeros(len(rows))
-        keep, groups, times, chosen = [], [], [], []
+        keep, groups, times, chosen, extra = [], [], [], [], []
         col = {a: i for i, a in enumerate(actions)}
         for i, r in enumerate(rows):
             X[i] = unpack(r["features"])
@@ -311,7 +317,11 @@ class Journal:
             groups.append(r["group_key"])
             times.append(r["decided_ns"])
             chosen.append(r["chosen_action"])
+            extra.append((r["policy_action"], r["shadow_action"], r["shadow_model"], r["feature_ns"]))
         idx = np.array(keep, dtype=int)
         return {"X": X[idx], "mask": M[idx], "payload": pay[idx], "cpu_ns": cpu[idx], "raw": raw[idx],
                 "groups": [groups[i] for i in keep], "decided_ns": np.array([times[i] for i in keep], dtype=np.int64),
-                "chosen": [chosen[i] for i in keep], "incomplete": len(rows) - len(keep)}
+                "chosen": [chosen[i] for i in keep], "policy": [extra[i][0] for i in keep],
+                "shadow": [extra[i][1] for i in keep], "shadow_model": [extra[i][2] for i in keep],
+                "feature_ns": np.array([extra[i][3] for i in keep], dtype=float), "actions": list(actions),
+                "incomplete": len(rows) - len(keep)}

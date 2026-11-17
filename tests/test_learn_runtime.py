@@ -109,9 +109,10 @@ def test_shadow_recommendation_does_not_change_working_decision(repo, tmp_path):
     mid = save_artifact(d.models, FixedPolicy(acts, CostModel(), {"action": "zstd:12"}), {})
     _set_state(repo, mode="shadow", candidate_model=mid)
     vid = _roundtrip(repo, _src(tmp_path), tmp_path)
-    rows = Journal(d.journal).q("SELECT policy_action, model_action, chosen_action FROM decisions WHERE version_id=?",
-                                (vid,))
-    assert rows and all(r["model_action"] == "zstd:12" and r["chosen_action"] == r["policy_action"] for r in rows)
+    rows = Journal(d.journal).q("SELECT policy_action, shadow_action, shadow_model, chosen_action, model_action "
+                                "FROM decisions WHERE version_id=?", (vid,))
+    assert rows and all(r["shadow_action"] == "zstd:12" and r["shadow_model"] == mid for r in rows)
+    assert all(r["chosen_action"] == r["policy_action"] and r["model_action"] is None for r in rows)
 
 
 def test_disabled_learning_leaves_no_trace(repo, tmp_path):

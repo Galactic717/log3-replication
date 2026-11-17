@@ -15,7 +15,8 @@ def _decision(vid, oid, t, *, probe_p=1.0, quarantine=0, group="g1"):
             "chunk_index": 0, "group_key": group, "decided_ns": t, "feature_schema": F.schema_id(),
             "features": pack(v), "mask": np.ones(F.N_FEATURES, dtype=bool).tobytes(), "feature_ns": 10,
             "inference_ns": 0, "mode": "baseline", "model_id": None, "policy_action": "zstd:3", "model_action": None,
-            "chosen_action": "zstd:3", "fallback": None, "probe_p": probe_p, "quarantine": quarantine, "published": 1}
+            "chosen_action": "zstd:3", "shadow_model": None, "shadow_action": None,
+            "fallback": None, "probe_p": probe_p, "quarantine": quarantine, "published": 1}
 
 
 def _outcome(vid, oid, t, action="zstd:3", payload=500):
