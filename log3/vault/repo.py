@@ -48,6 +48,7 @@ def new_config(*, min_copies: int = 2, chunk_size: int = MIB, kdf_n: int = 2 ** 
             "crypto": {"suite": SUITE, "kdf": new_kdf_params(kdf_n), "key_id": None,
                        "passphrase_env": PASSPHRASE_ENV},
             "compression": {"codec": "zstd", "level": 3, "advisor": None},
+            "learning": {"enabled": True},          # решта — типові значення log3.vault.learn.settings
             "policy": {**DEFAULT_POLICY, "min_copies": min_copies},
             "limits": dict(DEFAULT_LIMITS), "backends": []}
 

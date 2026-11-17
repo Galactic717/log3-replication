@@ -16,7 +16,7 @@ from scripts.vault_corpus import make_corpus, mutate
 
 PASS = "lifecycle passphrase"
 LEARNING = {"probe": {"rate": 1.0, "max_chunks_per_operation": 100000, "max_cpu_seconds_per_operation": 100,
-                      "max_cpu_fraction": 4},
+                      "max_cpu_fraction": 4, "max_load_per_cpu": 100.0},
             "cost": {"cpu_second_equiv_bytes": 0},            # ціль «лише простір»: детермінована механіка
             "train": {"min_rows": 50, "min_groups": 5, "search_budget": 8},
             "gate": {"min_shadow_decisions": 20, "min_relative_gain": 0.01, "bootstrap": 100}}
@@ -94,7 +94,8 @@ def test_full_cycle_shadow_evaluate_promote_rollback(collected, tmp_path):
     assert any(n.startswith("ga:") for n in names) and any(n.startswith("random:") for n in names)
     assert rep["search"]["ga"]["evaluations"] == rep["search"]["random"]["evaluations"]
     prov = rep["provenance"]
-    assert prov["train"]["to_ns"] < prov["validation"]["from_ns"] <= prov["validation"]["to_ns"] < prov["test"]["from_ns"]
+    tr, va, te = prov["train"], prov["validation"], prov["test"]
+    assert tr["to_ns"] < va["from_ns"] <= va["to_ns"] < te["from_ns"]
     d = LearnDir(repo.path)
     st = load_state(d)[0]
     assert st["mode"] == "shadow" and st["candidate_model"] == rep["model_id"]

@@ -20,6 +20,7 @@ PASS = "runtime test passphrase"
 def repo(tmp_path, monkeypatch):
     monkeypatch.setenv("LOG3_VAULT_PASSPHRASE", PASS)
     cfg = new_config(min_copies=1, chunk_size=64 * 1024, kdf_n=2 ** 10)
+    cfg["learning"] = {"probe": {"rate": 1.0, "max_load_per_cpu": 100.0}}   # проби детерміновано в тесті
     r = Repo.create(tmp_path / "repo", cfg, PASS.encode())
     add_backend(r, {"name": "d", "type": "localdir", "path": str(tmp_path / "disk"), "failure_domain": "a"})
     return r
@@ -82,7 +83,7 @@ def test_damaged_learning_falls_back_and_backup_continues(repo, tmp_path, damage
         d.root.mkdir(parents=True)
         d.journal.write_bytes(b"not a sqlite database" * 100)
     else:
-        repo.cfg["learning"] = {"probe": {"rate": 7}}
+        repo.cfg["learning"] = {"probe": {"rate": 7}}            # некоректна секція
         repo.save_config()
     _roundtrip(repo, _src(tmp_path), tmp_path)
     assert _events(repo, "learning_errors"), damage
