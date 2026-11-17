@@ -14,13 +14,14 @@ from log3.vault.repo import Repo, add_backend, new_config
 from log3.vault.restore import restore
 
 PASS = "runtime test passphrase"
+ACTS = ["store:0", "zstd:1", "zstd:3", "zstd:7", "zstd:12"]
 
 
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     monkeypatch.setenv("LOG3_VAULT_PASSPHRASE", PASS)
     cfg = new_config(min_copies=1, chunk_size=64 * 1024, kdf_n=2 ** 10)
-    cfg["learning"] = {"probe": {"rate": 1.0, "max_load_per_cpu": 100.0}}   # проби детерміновано в тесті
+    cfg["learning"] = {"actions": ACTS, "probe": {"rate": 1.0, "max_load_per_cpu": 100.0}}   # детерміновано
     r = Repo.create(tmp_path / "repo", cfg, PASS.encode())
     add_backend(r, {"name": "d", "type": "localdir", "path": str(tmp_path / "disk"), "failure_domain": "a"})
     return r
@@ -91,8 +92,7 @@ def test_damaged_learning_falls_back_and_backup_continues(repo, tmp_path, damage
 
 def test_active_model_is_used_but_unprofitable_compression_becomes_store(repo, tmp_path):
     d = LearnDir(repo.path)
-    acts = repo.cfg.get("learning", {}).get("actions") or ["store:0", "zstd:1", "zstd:3", "zstd:7", "zstd:12"]
-    mid = save_artifact(d.models, FixedPolicy(acts, CostModel(), {"action": "zstd:12"}), {})
+    mid = save_artifact(d.models, FixedPolicy(ACTS, CostModel(), {"action": "zstd:12"}), {})
     _set_state(repo, mode="active", active_model=mid)
     vid = _roundtrip(repo, _src(tmp_path), tmp_path)
     j = Journal(d.journal)
@@ -106,8 +106,7 @@ def test_active_model_is_used_but_unprofitable_compression_becomes_store(repo, t
 
 def test_shadow_recommendation_does_not_change_working_decision(repo, tmp_path):
     d = LearnDir(repo.path)
-    acts = ["store:0", "zstd:1", "zstd:3", "zstd:7", "zstd:12"]
-    mid = save_artifact(d.models, FixedPolicy(acts, CostModel(), {"action": "zstd:12"}), {})
+    mid = save_artifact(d.models, FixedPolicy(ACTS, CostModel(), {"action": "zstd:12"}), {})
     _set_state(repo, mode="shadow", candidate_model=mid)
     vid = _roundtrip(repo, _src(tmp_path), tmp_path)
     rows = Journal(d.journal).q("SELECT policy_action, shadow_action, shadow_model, chosen_action, model_action "

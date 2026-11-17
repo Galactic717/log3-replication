@@ -22,7 +22,7 @@ from .. import codecs
 from ..cryptobox import OVERHEAD
 from ..errors import Exit, VaultError
 
-DEFAULT_ACTIONS = ("store:0", "zstd:1", "zstd:3", "zstd:7", "zstd:12")
+DEFAULT_ACTIONS = ("store:0", "zstd:1", "zstd:3", "zstd:6")   # повільніші рівні — лише явно в конфігурації
 LEVELS = {"store": (0, 0), "zstd": (1, 19), "huffman-log3": (0, 0)}
 DEFAULT_CPU_SECOND_EQUIV_BYTES = 64 * (1 << 20)
 

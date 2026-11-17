@@ -25,7 +25,7 @@ ACTS = ["store:0", "zstd:1", "zstd:3", "zstd:7", "zstd:12"]
 def _repo(tmp_path, monkeypatch, name="repo"):
     monkeypatch.setenv("LOG3_VAULT_PASSPHRASE", PASS)
     cfg = new_config(min_copies=1, chunk_size=64 * 1024, kdf_n=2 ** 10)
-    cfg["learning"] = {"probe": {"rate": 1.0, "max_load_per_cpu": 100.0, "max_cpu_fraction": 4,
+    cfg["learning"] = {"actions": ACTS, "probe": {"rate": 1.0, "max_load_per_cpu": 100.0, "max_cpu_fraction": 4,
                                  "max_chunks_per_operation": 100000}, "drift": {"min_chunks": 16}}
     r = Repo.create(tmp_path / name, cfg, PASS.encode())
     add_backend(r, {"name": "d", "type": "localdir", "path": str(tmp_path / f"{name}-disk"), "failure_domain": "a"})

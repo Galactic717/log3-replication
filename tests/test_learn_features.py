@@ -54,7 +54,7 @@ def test_features_separate_text_from_random_and_use_classes_not_names():
     ft, fr = _vec(text), _vec(rnd, suffix="txt")
     assert ft.get("probe_ratio") < 0.3 < 0.9 < fr.get("probe_ratio")
     assert ft.get("entropy_sample") < fr.get("entropy_sample")
-    assert ft.get("repeat_4gram") > fr.get("repeat_4gram")
+    assert ft.get("repeat_lag") > 10 * fr.get("repeat_lag")
     assert fr.get("type_text") == 1.0 and fr.get("magic_unknown") == 1.0      # оманливе розширення видно
     assert ft.values.dtype == np.float32 and ft.values.shape == (F.N_FEATURES,)
     assert F.magic_class(b"PK\x03\x04....") == "packed" and F.type_class("DOCX") == "office_packed"

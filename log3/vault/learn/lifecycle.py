@@ -616,7 +616,8 @@ def auto(repo) -> dict:
     if not st["frozen"] and not st["candidate_model"]:
         try:
             rep = train(repo)
-            out["train"] = {k: rep.get(k) for k in ("status", "selected", "model_id", "gate", "next_in_seconds")}
+            out["train"] = {k: rep.get(k) for k in ("status", "selected", "model_id", "gate", "next_in_seconds",
+                                                    "resources", "overhead")}
         except VaultError as e:
             out["train"] = {"status": e.code, "message": e.message}
     return out

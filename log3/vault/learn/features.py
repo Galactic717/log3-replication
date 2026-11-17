@@ -28,7 +28,7 @@ FEATURE_SCHEMA = "log3-chunk-features"
 FEATURE_VERSION = 1
 WINDOW = 4096
 PROBE_WINDOW = 8192
-GRAM_BYTES = 2048                 # з кожного вікна для 4-грам
+LAGS = (1, 2, 4, 8)
 _local = threading.local()
 
 TYPE_CLASSES = {
@@ -62,7 +62,7 @@ NUMERIC = (
     ("entropy_sample", "ентропія Шеннона трьох вікон по 4 КіБ, біт/байт / 8"),
     ("entropy_head", "ентропія перших 4 КіБ блока (як у базовій політиці) / 8"),
     ("distinct_bytes", "частка різних значень байта у вибірці"),
-    ("repeat_4gram", "частка повторюваних 4-грам у перших 2 КіБ кожного вікна (повторюваність)"),
+    ("repeat_lag", "повторюваність: найбільша частка байтів, що дорівнюють байту на лагах 1/2/4/8, у вибірці"),
     ("zero_bytes", "частка нульових байтів у вибірці"),
     ("printable_bytes", "частка друкованих ASCII і пробільних байтів у вибірці"),
     ("probe_ratio", "виміряна стисливість: zstd-1 на 2 вікнах по 8 КіБ, вихід/вхід"),
@@ -87,7 +87,7 @@ def schema() -> dict:
             "definitions": dict(NUMERIC) | {f"type_{t}": f"клас розширення {t}" for t in TYPE_NAMES}
             | {f"magic_{m}": f"клас сигнатури {m}" for m in MAGIC_NAMES},
             "type_classes": TYPE_CLASSES, "window_bytes": WINDOW, "probe_window_bytes": PROBE_WINDOW,
-            "gram_bytes": GRAM_BYTES}
+            "repeat_lags": list(LAGS)}
 
 
 def schema_id() -> str:
@@ -190,11 +190,8 @@ def extract(data: bytes, *, suffix: str, file_size: int, chunk_index: int, chunk
         v[_IDX["distinct_bytes"]] = np.count_nonzero(counts) / 256
         v[_IDX["zero_bytes"]] = counts[0] / sample.size
         v[_IDX["printable_bytes"]] = (counts[32:127].sum() + counts[9] + counts[10] + counts[13]) / sample.size
-    if sample.size >= 8:
-        s = sample.reshape(-1, WINDOW)[:, :GRAM_BYTES].ravel() if sample.size == 3 * WINDOW else sample[:GRAM_BYTES]
-        s = s.astype(np.uint32)
-        grams = s[:-3] | (s[1:-2] << 8) | (s[2:-1] << 16) | (s[3:] << 24)
-        v[_IDX["repeat_4gram"]] = 1.0 - np.unique(grams).size / grams.size
+    if sample.size > LAGS[-1]:
+        v[_IDX["repeat_lag"]] = max(np.count_nonzero(sample[k:] == sample[:-k]) / (sample.size - k) for k in LAGS)
     v[_IDX["probe_ratio"]], v[_IDX["probe_log_ns_per_byte"]] = probe_compressibility(data)
     if lineage is not None and lineage.versions_seen > 0:
         v[_IDX["lineage_known"]] = 1.0
