@@ -9,8 +9,8 @@ def _snapshot(root):
 
 def test_corpus_is_deterministic_and_mutations_change_files(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
-    info = make_corpus(a, seed=7, scale_mib=2)
-    make_corpus(b, seed=7, scale_mib=2)
+    info = make_corpus(a, seed=7, scale_mib=2, max_file_kib=128)
+    make_corpus(b, seed=7, scale_mib=2, max_file_kib=128)
     assert _snapshot(a) == _snapshot(b) and info["files"] > 10
     before = _snapshot(a)
     assert mutate(a, seed=8, fraction=0.2) > 0 and _snapshot(a) != before

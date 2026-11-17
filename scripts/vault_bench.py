@@ -97,10 +97,10 @@ class Bench:
         self.cli("backend-node", "backend", "add", "node", "--type", "node", "--url",
                  f"https://127.0.0.1:{self.port}", "--ca-file", self.tmp / "certs" / "node.crt", "--domain", "site-b")
 
-    def configure(self, **compression) -> None:
+    def configure(self, section: str, **values) -> None:
         path = self.repo / "config.json"
         cfg = json.loads(path.read_text(encoding="utf-8"))
-        cfg["compression"].update(compression)
+        cfg.setdefault(section, {}).update(values)
         path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def stored(self, version_id: str) -> dict:
@@ -120,12 +120,13 @@ def _same_tree(a: Path, b: Path) -> bool:
     return fa.keys() == fb.keys() and all(fa[k].read_bytes() == fb[k].read_bytes() for k in fa)
 
 
-def baseline(scale_mib: float, seed: int, tmp: Path) -> dict:
+def baseline(scale_mib: float, seed: int, tmp: Path, max_file_kib: int = 512) -> dict:
     """backup -> restart -> verify -> restore на коді етапу 1 (advisor не налаштовано)."""
     b = Bench(tmp)
     src = tmp / "src"
-    corpus = make_corpus(src, seed, scale_mib)
+    corpus = make_corpus(src, seed, scale_mib, max_file_kib)
     b.setup()
+    b.configure("learning", enabled=False)                  # саме тракт етапу 1, без ознак і журналу
     try:
         acc = b.cli("backup (accept local)", "backup", src)["version"]
         vid = acc["version_id"]
@@ -164,10 +165,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("scenario", choices=("baseline",))
     ap.add_argument("--scale-mib", type=float, default=32.0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--max-file-kib", type=int, default=512)
     ap.add_argument("--out", type=Path, help="куди записати JSON (типово stdout)")
     a = ap.parse_args(argv)
     with tempfile.TemporaryDirectory(prefix="log3-bench-") as d:
-        result = {"environment": environment(), **baseline(a.scale_mib, a.seed, Path(d))}
+        result = {"environment": environment(), **baseline(a.scale_mib, a.seed, Path(d), a.max_file_kib)}
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if a.out:
         a.out.parent.mkdir(parents=True, exist_ok=True)

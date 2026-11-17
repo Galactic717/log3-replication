@@ -4,7 +4,8 @@
     mutate(root, seed, fraction)         частина файлів змінюється, як між робочими днями
     mass_rewrite(root, seed)             масове переписування майже всіх файлів випадковими байтами
 
-Типи підібрано так, щоб жодна проста ознака не вирішувала задачу сама: є стиснені контейнери
+Файли різних типів лежать упереміш у «проєктах», як у робочих каталогах. Типи підібрано так,
+щоб жодна проста ознака не вирішувала задачу сама: є стиснені контейнери
 (docx/xlsx/zip — це zip), «PDF» із текстовими й стисненими потоками, логи, CSV, JSON, код,
 розріджені образи, двійкові файли, а також файли з оманливим розширенням (.txt із випадковими
 байтами, .dat із текстом). Генерація детермінована за seed.
@@ -83,10 +84,12 @@ def _zip(rng: random.Random, n: int, inner: str) -> bytes:
     """Справжній zip-контейнер (як docx/xlsx): deflate-потоки майже не стискаються вдруге."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types/>')
+        def put(name: str, data: bytes) -> None:          # фіксований час: детермінований архів
+            z.writestr(zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0)), data, zipfile.ZIP_DEFLATED)
+        put("[Content_Types].xml", b'<?xml version="1.0"?><Types/>')
         k = 0
         while buf.tell() < n:
-            z.writestr(f"{inner}/part{k}.xml", _text(rng, 64 * 1024) + rng.randbytes(16 * 1024))
+            put(f"{inner}/part{k}.xml", _text(rng, 64 * 1024) + rng.randbytes(16 * 1024))
             k += 1
     return buf.getvalue()
 
@@ -131,27 +134,38 @@ KINDS = (
 )
 
 
-def make_corpus(root: Path, seed: int = 1, scale_mib: float = 32.0) -> dict:
+def _pick(rng: random.Random):
+    r, acc = rng.random() * sum(k[2] for k in KINDS), 0.0
+    for kind in KINDS:
+        acc += kind[2]
+        if r <= acc:
+            return kind
+    return KINDS[-1]
+
+
+def _new_file(rng: random.Random, root: Path, projects: int, max_file_kib: int, tag: str) -> int:
+    ext, gen, _, (lo, hi) = _pick(rng)
+    n = rng.randint(min(lo, max_file_kib), min(hi, max_file_kib)) * 1024
+    sub = root / f"project-{rng.randrange(projects):03d}"
+    sub.mkdir(parents=True, exist_ok=True)
+    (sub / f"{tag}.{ext}").write_bytes(gen(rng, n))
+    return n
+
+
+def make_corpus(root: Path, seed: int = 1, scale_mib: float = 32.0, max_file_kib: int = 4096) -> dict:
+    """Файли різних типів упереміш по «проєктах» (як робочі каталоги замовника)."""
     rng = random.Random(seed)
     root.mkdir(parents=True, exist_ok=True)
-    total, files = 0, 0
-    for k, (ext, gen, share, (lo, hi)) in enumerate(KINDS):
-        budget = int(share * scale_mib * MIB)
-        sub = root / f"{ext}-{k}"
-        sub.mkdir(exist_ok=True)
-        j = 0
-        while budget > 0:
-            n = min(budget, rng.randint(lo, hi) * 1024)
-            (sub / f"f{j:04d}.{ext}").write_bytes(gen(rng, n))
-            budget -= n
-            total += n
-            files += 1
-            j += 1
-    return {"files": files, "bytes": total, "seed": seed}
+    budget, total, files = int(scale_mib * MIB), 0, 0
+    projects = max(4, int(scale_mib * MIB / (max(64, max_file_kib // 2) * 1024) / 12))
+    while total < budget:
+        total += _new_file(rng, root, projects, max_file_kib, f"f{files:05d}")
+        files += 1
+    return {"files": files, "bytes": total, "seed": seed, "projects": projects}
 
 
-def mutate(root: Path, seed: int, fraction: float = 0.15) -> int:
-    """Змінює частку файлів: дописування в текстові, перезапис хвоста в двійкових, кілька нових."""
+def mutate(root: Path, seed: int, fraction: float = 0.15, new_files: float = 0.05) -> int:
+    """Змінює частку файлів (дописування в текстові, нові байти в двійкові) і додає нові файли."""
     rng = random.Random(seed)
     paths = sorted(p for p in root.rglob("*") if p.is_file())
     changed = 0
@@ -161,8 +175,9 @@ def mutate(root: Path, seed: int, fraction: float = 0.15) -> int:
             f.write(_log(rng, rng.randint(1, 64) * 1024) if ext in ("log", "csv", "txt", "json", "py", "dat")
                     else rng.randbytes(rng.randint(4, 64) * 1024))
         changed += 1
-    for k in range(max(1, len(paths) // 50)):
-        (root / "log-0" / f"new-{seed}-{k}.log").write_bytes(_log(rng, rng.randint(64, 512) * 1024))
+    projects = len([d for d in root.iterdir() if d.is_dir()]) or 1
+    for k in range(max(1, int(len(paths) * new_files))):
+        _new_file(rng, root, projects, 1024, f"new-{seed}-{k}")
         changed += 1
     return changed
 
