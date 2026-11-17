@@ -134,9 +134,11 @@ def score(choice: np.ndarray, C: np.ndarray, payload: np.ndarray, cpu: np.ndarra
           extra_cost: float = 0.0) -> dict:
     """Метрики політики на рядках: вартість відносно оракула, байти, CPU, суміш дій."""
     rows = np.arange(len(choice))
-    chosen = C[rows, choice].sum() + extra_cost * len(choice)
+    gross = C[rows, choice].sum()
+    chosen = gross + extra_cost * len(choice)
     oracle = C.min(1).sum()
     return {"rows": int(len(choice)), "cost_vs_oracle": float(chosen / oracle) if oracle else None,
+            "cost_vs_oracle_without_overhead": float(gross / oracle) if oracle else None,
             "cost_per_raw_byte": float(chosen / raw.sum()) if raw.sum() else None,
             "stored_to_raw": float(payload[rows, choice].sum() / raw.sum()) if raw.sum() else None,
             "encode_cpu_seconds_per_gib": float(cpu[rows, choice].sum() / 1e9 / (raw.sum() / 2**30))
@@ -415,9 +417,13 @@ def evaluate(repo) -> dict:
               "evaluated_ns": now_ns()}
     st, _ = load_state(d)
     st["candidate_eval"] = {"model_id": cand, **result}
-    save_state(d, st, event="evaluate", detail=f"{cand}: {'passed' if result['passed'] else 'failed'}")
+    if not result["passed"]:                              # не підтвердився на свіжих даних: відхилити, база лишається
+        st["candidate_model"] = None
+        if st["mode"] == "shadow":
+            st["mode"] = "baseline"
+    save_state(d, st, event="evaluate", detail=f"{cand}: {'passed' if result['passed'] else 'rejected'}")
     _log(d, "evaluate", cand, f"passed={result['passed']} gain={boot['gain']:.4f}")
-    return {"status": "evaluated", "model_id": cand, **result}
+    return {"status": "evaluated" if result["passed"] else "rejected", "model_id": cand, **result}
 
 
 def promote(repo) -> dict:

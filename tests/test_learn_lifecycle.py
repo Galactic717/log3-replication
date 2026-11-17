@@ -170,3 +170,18 @@ def test_set_mode_rules(collected):
     with pytest.raises(VaultError):
         L.set_mode(repo, "shadow")
     assert L.set_mode(repo, "baseline")["mode"] == "baseline"
+
+
+def test_candidate_failing_shadow_is_rejected_and_baseline_stays(collected):
+    repo, src = collected
+    d = LearnDir(repo.path)
+    acts = L.settings(repo.cfg)["actions"]
+    mid = save_artifact(d.models, FixedPolicy(acts, CostModel(), {"action": "store:0"}), {})
+    save_state(d, {**default_state(), "mode": "shadow", "candidate_model": mid, "candidate_set_ns": 1}, event="test")
+    _rounds(repo, src, 1, seed=95)
+    ev = L.evaluate(repo)
+    assert ev["status"] == "rejected" and not ev["passed"] and ev["gain"] < 0
+    st = load_state(d)[0]
+    assert st["mode"] == "baseline" and st["candidate_model"] is None and st["candidate_eval"]["model_id"] == mid
+    with pytest.raises(VaultError):
+        L.promote(repo)

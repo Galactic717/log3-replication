@@ -122,7 +122,8 @@ def run(a, repo) -> tuple[Exit, dict]:
         return Exit.OK, {"learning": _jsonable(rep)}
     if act == "evaluate":
         rep = L.evaluate(repo)
-        code = Exit.OK if rep.get("passed") or rep["status"] in ("collecting", "no_candidate") else Exit.ATTENTION
+        code = Exit.OK if rep.get("passed") or rep["status"] in ("collecting", "no_candidate", "rejected") \
+            else Exit.ATTENTION
         return code, {"learning": _jsonable(rep)}
     if act == "promote":
         return Exit.OK, {"learning": L.promote(repo)}
