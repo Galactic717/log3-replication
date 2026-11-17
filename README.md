@@ -114,7 +114,7 @@ S, R і `static_q`, що не містить шуму таймера.
   процедури оновлять їх під час `python scripts/reproduce.py` з `materials/`. Без пакета викладача їх не
   перераховано, щоб не підміняти результати T01 синтетикою.
 - F1 і Q описують навчальний журнал подій LOG3. Вони нічого не кажуть про якість резервного копіювання
-  документів чи їхню бізнесову важливість у файловому режимі.
+  документів чи їхню бізнесову важливість у файловому режимі; там свої вимірювання (`docs/LEARNING.md`).
 
 Чинна S використовує `b_ref = 16·N` у байтах і `b_stored = 8·global_used_bytes` у бітах.
 Формулу збережено до уточнення визначення `B_ref` у методичці; її не слід трактувати як звичайну
@@ -139,7 +139,14 @@ python -m log3.vault restore latest ./restored
 сертифікат) → перевірка → відновлення через staging. Стан версії явний: `accepted_local` не означає
 `protected`. Команди, модель станів, гарантії, формати, межі й обмеження —
 [docs/FILE_MODE.md](docs/FILE_MODE.md); машинозчитуваний опис етапу — [stage1.json](stage1.json).
-Точка розширення для навчання — `CompressionAdvisor` у `log3/vault/advisor.py`.
+
+**Локальне навчання (етап 2).** Нова інсталяція працює без моделі на базовій політиці й сама збирає
+вимірювання: ознаки блока → фактичні байти, час і CPU кодування, плюс проби інших допустимих дій.
+Цикл baseline → shadow → оцінювання → active → rollback вбудовано в `run`; модель вибирає лише кодек і
+рівень, а жорсткі правила (копії, retention, шифрування, права, видалення) їй недоступні. Команди
+`python -m log3.vault learn status|train|evaluate|promote|rollback|pause|…`, опис —
+[docs/LEARNING.md](docs/LEARNING.md), виміряна користь і overhead — [results/vault/](results/vault/),
+машинозчитуваний опис — [stage2.json](stage2.json).
 
 ## Структура
 
@@ -160,10 +167,11 @@ log3/
   attack/        weak_cipher.py, key_search.py (ГА відновлює ключ), tamper.py, __main__.py (звіт)
   vault/         файловий режим: формат об'єктів і маніфест, крипто, кодеки, каталог і черга SQLite,
                  backend-и (каталог, HTTPS-вузол), захоплення, реплікація, verify/repair/gc, restore, CLI
+  vault/learn/   локальне навчання вибору стиснення: ознаки, журнал, моделі, цикл shadow/active/rollback
 tests/           pytest: формат, крипто, еталонні пакети, ДП проти перебору, планувальник, тракт, NN, ГА, атака
-scripts/         reproduce.py
-results/         C1, таблиці звіту 1–6, матриця помилок, журнал і графік ГА, атака, final_metrics.json
-docs/            REPORT.md (звіт), DECISIONS.md (лог рішень)
+scripts/         reproduce.py; vault_bench.py і vault_corpus.py (вимірювання файлового режиму)
+results/         C1, таблиці звіту 1–6, матриця помилок, журнал і графік ГА, атака, final_metrics.json; vault/ — вимірювання файлового режиму
+docs/            REPORT.md (звіт), DECISIONS.md (лог рішень), FILE_MODE.md, LEARNING.md
 META-USAGE.md    облік використання ШІ (обов'язковий артефакт курсу)
 ```
 

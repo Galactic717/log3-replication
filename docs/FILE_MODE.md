@@ -48,6 +48,9 @@ python -m log3.vault restore latest /tmp/restored
 | `gc [--apply]` | прибирає версії після retention; без `--apply` лише звіт |
 | `recover NAME --type ... --domain D` | відтворює сховище з backend-а після втрати локального диска |
 | `serve-node` · `node-cert` | віддалений вузол і його сертифікат |
+| `learn status\|train\|evaluate\|promote\|rollback\|pause\|…` | локальне навчання вибору стиснення (етап 2, [LEARNING.md](LEARNING.md)) |
+
+`run` після черги виконує один крок циклу навчання (`run --no-learn` — без нього).
 
 Кожна команда приймає `--repo DIR` і `--json` (один JSON-об'єкт у stdout: `ok`, `command`, `exit_code`,
 `exit_name`, далі дані).
@@ -151,6 +154,7 @@ AAD — заголовок і `object_id`. `object_id = HMAC-SHA256(K_id, kind �
   "crypto": {"suite": "AES-256-GCM", "kdf": {"name": "scrypt", "salt_b64": "…", "n": 32768, "r": 8, "p": 1},
              "key_id": "…", "passphrase_env": "LOG3_VAULT_PASSPHRASE"},
   "compression": {"codec": "zstd", "level": 3, "advisor": null},
+  "learning": {"enabled": true},
   "policy": {"min_copies": 2, "extra_copies_high_priority": 1, "retention_days": 30, "keep_last": 3},
   "limits": {"queue_max_jobs": 200000, "spool_max_bytes": 21474836480, "min_free_bytes": 268435456,
              "max_parallel": 4, "max_attempts": 8, "backoff_base_seconds": 2.0, "backoff_cap_seconds": 600.0,
@@ -182,7 +186,11 @@ AAD — заголовок і `object_id`. `object_id = HMAC-SHA256(K_id, kind �
   найновіших свого набору. GC не чіпає незавершені версії, об'єкти з активними завданнями і маніфести
   живих версій.
 
-## Точка розширення для навчання (етап 2)
+## Точка розширення для навчання
+
+Етап 2 реалізовано: навчання вбудоване в тракт напряму (`log3/vault/learn/`, секція `learning` у
+`config.json`) і описане в [LEARNING.md](LEARNING.md). Хук `compression.advisor` лишається для власних
+advisor-ів: якщо його задано, він стає базовою політикою, а навчання порівнює себе саме з ним.
 
 `log3/vault/advisor.py`:
 
