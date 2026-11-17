@@ -142,3 +142,32 @@ def test_mass_rewrite_is_quarantined_and_freezes_updates(env, tmp_path):
     assert env.ok("learn", "unfreeze")["learning"]["frozen"] is False
     j = env.repo / "learn" / "journal.sqlite"
     assert env.sql("SELECT COUNT(*) FROM decisions WHERE quarantine=1", j)[0][0] > 0   # у навчання не йде
+
+
+def _tree(root):
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def test_real_backup_restore_identical_with_adaptation_off_and_active(env, tmp_path):
+    from log3.vault.learn.actions import CostModel
+    from log3.vault.learn.models import FixedPolicy, save_artifact
+    from log3.vault.learn.settings import LearnDir, default_state, save_state
+
+    src = tmp_path / "src"
+    make_corpus(src, 8, 2, max_file_kib=96)
+    env.ok("learn", "disable")
+    off = env.ok("backup", src, "--wait")["version"]["version_id"]
+    env.ok("restore", off, tmp_path / "off")
+    assert _tree(tmp_path / "off") == _tree(src)
+    env.ok("learn", "enable")
+    d = LearnDir(env.repo)
+    acts = env.ok("learn", "config")["learning_config"]["actions"]
+    mid = save_artifact(d.models, FixedPolicy(acts, CostModel(), {"action": "zstd:6"}), {})
+    save_state(d, {**default_state(), "mode": "active", "active_model": mid, "active_since_ns": 1}, event="test")
+    mutate(src, 81, 0.5, 0.2)
+    on = env.ok("backup", src, "--wait")
+    assert on["learning"]["mode"] == "active" and on["learning"]["model_id"] == mid
+    env.ok("restore", on["version"]["version_id"], tmp_path / "on")
+    assert _tree(tmp_path / "on") == _tree(src)
+    env.ok("restore", off, tmp_path / "off-again")                   # стара версія — як і раніше
+    assert _tree(tmp_path / "off-again") == _tree(tmp_path / "off")
