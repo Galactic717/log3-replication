@@ -6,6 +6,8 @@ import pytest
 
 from log3.vault import codecs, manifest
 from log3.vault.advisor import CompressionContext, Recommendation, SafeAdvisor, load_advisor, sample_entropy
+from log3.vault.backends import node_server
+from log3.vault.backends.localdir import ObjectDir
 from log3.vault.cryptobox import KIND_CHUNK, KIND_MANIFEST, OVERHEAD, CryptoBox, PassphraseKeys, new_kdf_params
 from log3.vault.errors import VaultError
 from log3.vault.replicate import BATCH_UNIT, _lease
@@ -18,6 +20,42 @@ KDF = new_kdf_params(n=2 ** 10)        # швидкий KDF лише для те
 @pytest.fixture(scope="module")
 def box():
     return CryptoBox(PassphraseKeys(b"unit-test", KDF))
+
+
+def test_node_quota_counts_pending_writes_and_only_replacement_growth(tmp_path):
+    ledger = node_server.Ledger(tmp_path / "node-ledger.sqlite")
+    a, b = "a" * 64, "b" * 64
+    with ledger.reserve(a, 6, 10):
+        with pytest.raises(node_server.QuotaExceeded), ledger.reserve(b, 6, 10):
+            pytest.fail("pending bytes must count toward the quota")
+        ledger.charge(a, 6, "first")
+    with ledger.reserve(a, 8, 10):
+        ledger.charge(a, 8, "repair")
+    assert ledger.used() == 8
+
+    with pytest.raises(RuntimeError, match="write failed"), ledger.reserve(b, 2, 10):
+        raise RuntimeError("write failed")
+    with ledger.reserve(b, 2, 10):
+        ledger.charge(b, 2, "next")
+    assert ledger.used() == 10
+
+
+def test_node_ledger_reconciles_existing_objects_on_restart(tmp_path):
+    store = ObjectDir(tmp_path)
+    store.create()
+    ledger = node_server.Ledger(tmp_path / "node-ledger.sqlite")
+    old, added, removed = "a" * 64, "b" * 64, "c" * 64
+    ledger.charge(old, 1, "first")
+    ledger.charge(old, 1, "duplicate")
+    ledger.charge(removed, 100, "removed")
+    for oid, payload in ((old, b"changed"), (added, b"new")):
+        path = store.path(oid)
+        path.parent.mkdir()
+        path.write_bytes(payload)
+
+    ledger.reconcile_objects(store.root / "objects")
+    assert ledger.used() == 10
+    assert ledger.db.execute("SELECT puts FROM charges WHERE oid=?", (old,)).fetchone() == (2,)
 
 
 @pytest.mark.parametrize("codec_id", sorted(codecs.REGISTRY))

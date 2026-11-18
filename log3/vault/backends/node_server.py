@@ -7,9 +7,9 @@
 несе токен (порівняння за сталий час). Токен читається зі змінної середовища або файла.
 Вузол бачить лише зашифровані об'єкти та відкриті службові файли без секретів.
 
-Підтвердження PUT надсилається після fsync файла, перейменування, fsync каталогу й фіксації
-обліку квоти. Якщо відповідь загубилась, повтор того самого PUT бачить готовий об'єкт:
-нічого не дописує і квоту вдруге не списує (облік — INSERT OR IGNORE за oid).
+Підтвердження PUT надсилається після стійкого запису файла й фіксації обліку квоти.
+Паралельні записи резервують місце до передавання, а повтор того самого PUT не списує
+квоту вдруге. Після перезапуску облік звіряється з наявними файлами об'єктів.
 
 Доступ (--tokens-file, команда node-token): у файлі лише SHA-256 токенів, назви й ролі.
   reader  GET/stat/info/meta-list           — перевірка й restore
@@ -33,6 +33,8 @@ import sqlite3
 import ssl
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,16 +42,22 @@ from urllib.parse import urlsplit
 
 from ..errors import FAULT_ENV, BackendError
 from ..fsutil import DURABILITY, IO_BLOCK, read_blocks
+from .base import check_oid
 from .localdir import ObjectDir
 
 TOKEN_ENV = "LOG3_NODE_TOKEN"
+
+
+class QuotaExceeded(Exception):
+    """Для нового або збільшеного об'єкта бракує квоти."""
 
 
 class Ledger:
     """Облік квоти вузла: один рядок на об'єкт, тому повтор не списує місце вдруге."""
 
     def __init__(self, path: Path):
-        self.lock = threading.Lock()
+        self.lock = threading.Condition()
+        self.reserved: dict[str, int] = {}
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
@@ -60,18 +68,51 @@ class Ledger:
         with self.lock:
             return self.db.execute("SELECT COALESCE(SUM(length),0) FROM charges").fetchone()[0]
 
-    def has(self, oid: str) -> bool:
+    @contextmanager
+    def reserve(self, oid: str, length: int, quota: int) -> Iterator[None]:
+        """Серіалізувати зміни одного oid і врахувати приріст від усіх активних записів."""
         with self.lock:
-            return self.db.execute("SELECT 1 FROM charges WHERE oid=?", (oid,)).fetchone() is not None
+            self.lock.wait_for(lambda: oid not in self.reserved)
+            row = self.db.execute("SELECT length FROM charges WHERE oid=?", (oid,)).fetchone()
+            extra = max(0, length - (row[0] if row else 0))
+            if quota and extra and self.used() + sum(self.reserved.values()) + extra > quota:
+                raise QuotaExceeded
+            self.reserved[oid] = extra
+        try:
+            yield
+        finally:
+            with self.lock:
+                del self.reserved[oid]
+                self.lock.notify_all()
 
     def charge(self, oid: str, length: int, op_id: str) -> None:
         with self.lock:
             self.db.execute("INSERT INTO charges(oid,length,op_id) VALUES(?,?,?) "
-                            "ON CONFLICT(oid) DO UPDATE SET puts=puts+1", (oid, length, op_id))
+                            "ON CONFLICT(oid) DO UPDATE SET length=excluded.length, puts=puts+1", (oid, length, op_id))
+            if oid in self.reserved:
+                self.reserved[oid] = 0
 
     def release(self, oid: str) -> None:
         with self.lock:
             self.db.execute("DELETE FROM charges WHERE oid=?", (oid,))
+
+    def reconcile_objects(self, objects: Path) -> None:
+        """Відновити облік, якщо процес зупинився між зміною файла й записом у SQLite."""
+        sizes = {}
+        for path in objects.glob("*/*"):
+            try:
+                oid = check_oid(path.name)
+            except BackendError:
+                continue
+            if path.is_file() and path.parent.name == oid[:2]:
+                sizes[oid] = path.stat().st_size
+        with self.lock, self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            charged = dict(self.db.execute("SELECT oid, length FROM charges"))
+            self.db.executemany("DELETE FROM charges WHERE oid=?", ((oid,) for oid in charged.keys() - sizes.keys()))
+            self.db.executemany("INSERT INTO charges(oid,length) VALUES(?,?) "
+                                "ON CONFLICT(oid) DO UPDATE SET length=excluded.length",
+                                ((oid, size) for oid, size in sizes.items() if size != charged.get(oid)))
 
 
 ROLES = {"reader": 0, "writer": 1, "admin": 2}
@@ -131,6 +172,7 @@ class NodeServer(ThreadingHTTPServer):
         self.fail_lock = threading.Lock()
         self.store.create()
         self.ledger = Ledger(data / "node-ledger.sqlite")
+        self.ledger.reconcile_objects(data / "objects")
 
     def get_request(self):
         sock, addr = self.socket.accept()
@@ -238,8 +280,9 @@ class _Handler(BaseHTTPRequestHandler):
                     self.wfile.write(block)
                 return None
             if kind == "objects" and method == "DELETE":
-                srv.store.delete(arg)
-                srv.ledger.release(arg)
+                with srv.ledger.reserve(check_oid(arg), 0, quota=0):
+                    srv.store.delete(arg)
+                    srv.ledger.release(arg)
                 return self._json(200, {"deleted": arg})
             if kind == "stat" and method == "GET":
                 s = srv.store.stat(arg, rehash="rehash=0" not in url.query)
@@ -270,18 +313,24 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _put(self, oid: str, length: int) -> None:
         srv = self.server
-        if srv.quota and not srv.ledger.has(oid) and srv.ledger.used() + length > srv.quota:
+        sha = self.headers.get("X-Log3-Sha256", "")
+        try:
+            with srv.ledger.reserve(check_oid(oid), length, srv.quota):
+                duplicate = srv.store.store(oid, self._body(length), length, sha)
+                srv.ledger.charge(oid, length, self.headers.get("X-Log3-Op", ""))
+        except QuotaExceeded:
             self.close_connection = True
             return self._json(507, {"error": "quota exceeded"})
-        sha = self.headers.get("X-Log3-Sha256", "")
-        duplicate = srv.store.store(oid, self._body(length), length, sha)
-        srv.ledger.charge(oid, length, self.headers.get("X-Log3-Op", ""))
-        flag = srv.store.root / "fault-fired"
-        if os.environ.get(FAULT_ENV) == "node_drop_response_once" and not flag.exists():
-            flag.write_text("1")                               # тест: запис стійкий, відповідь загублено
-            self.close_connection = True
-            self.connection.close()
-            return None
+        if os.environ.get(FAULT_ENV) == "node_drop_response_once":
+            flag = srv.store.root / "fault-fired"
+            try:
+                flag.touch(exist_ok=False)
+            except FileExistsError:
+                pass
+            else:
+                self.close_connection = True                  # лише перший запис губить відповідь
+                self.connection.close()
+                return None
         return self._json(200, {"oid": oid, "length": length, "sha256": sha, "durability": DURABILITY,
                                 "duplicate": duplicate})
 

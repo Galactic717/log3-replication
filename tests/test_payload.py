@@ -76,6 +76,12 @@ def test_empty():
     assert parse_payload(raw_payload([])).records == []    # стиснений варіант із nsym = 0
 
 
+def test_empty_class_table_round_trip():
+    parsed = parse_payload(build_payload([], class_table=[]))
+    assert parsed.flags & FLAG_CLASS_TABLE
+    assert parsed.class_table == []
+
+
 RS = make_records(4, seed=7)
 
 
