@@ -3,7 +3,9 @@
 Командний проєкт 3 з дисципліни «Алгоритми і оптимізація програмних рішень» (КНУ). Система вирішує, які
 події журналу зберегти, у скількох копіях і на яких вузлах, щоб за обмеженого бюджету реплікації після
 відмов вузлів відновити максимум критичних подій, а копії лишались нечитабельними для сторони з доступом до
-вузлів.
+вузлів. Поверх навчального тракту зроблено встановлюваний продукт **LOG3 Vault**: захищене резервне
+копіювання й реплікація довільних файлів із перевірюваними гарантіями, локальним навчанням вибору
+стиснення і модулем автоматичного захисту (`python -m log3.defense`).
 
 ```
 session.csv → [1] перцептрон (клас 0/1/2) → v_i = priority(клас) + critical_bonus·critical
@@ -148,6 +150,45 @@ python -m log3.vault restore latest ./restored
 [docs/LEARNING.md](docs/LEARNING.md), виміряна користь і overhead — [results/vault/](results/vault/),
 машинозчитуваний опис — [stage2.json](stage2.json).
 
+## Етап 3: встановлюваний продукт і захист
+
+**Встановлення.** З вихідного коду: `pip install -e .` (команди `log3-vault`, `log3-defense`); офлайн із
+релізу: `python scripts/build_release.py --verify dist`, потім
+`pip install --no-index --find-links dist/wheelhouse dist/log3-3.0.0-py3-none-any.whl`. Windows/Linux,
+служба, оновлення й міграції, аварійне відновлення, моніторинг — [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+```bash
+log3-vault init && log3-vault backend add disk --type localdir --path /mnt/usb/log3 --domain usb-disk
+log3-vault backup ~/Documents --wait          # 0 лише коли protected
+log3-vault doctor && log3-vault health        # перевірки й пороги (код 0/4)
+log3-vault find --path "*.pdf"                # пошук: маніфести розшифровуються лише локально
+log3-vault drill                              # пробне відновлення з побайтовою звіркою
+log3-vault metrics --format prometheus        # без web-панелі, без шляхів у мітках
+python log3_restore.py --backend /mnt/usb/log3 restore latest ./out   # без інсталяції (emergency-kit)
+```
+
+**Захист.** `python -m log3.defense` (quick) або `--profile full`; `--step` — покроково, `--dry-run` —
+лише план, `--stage NAME` — окремий етап. Модуль запускає справжні команди й для кожного кроку показує мету,
+команду без секретів, живий вивід, тривалість, код завершення й перевірений результат; журнал і JSON-підсумок —
+у `defense-out/`. Сценарії учасників — [docs/DEFENSE.md](docs/DEFENSE.md).
+
+**Гарантії** ([docs/GUARANTEES.md](docs/GUARANTEES.md)): що означають локальне приймання, запис копії й
+`protected`; які відмови витримує кожен стан; що потрібно для restore; переповнення й повтори; матриця з 9
+відмов, яку модуль захисту перевіряє в нових процесах (прогін 2026-11-18, Windows 11: 9 з 9 пройдено — [results/vault/failure_matrix.md](results/vault/failure_matrix.md)). Ключі, мережа, межі доступу ОС і
+приватність метаданих — [docs/SECURITY.md](docs/SECURITY.md).
+
+**Продуктові вимірювання** (не навчальні S/R/T/Q): [results/vault/product_bench.md](results/vault/product_bench.md)
+— точність restore, виконання політики, простір, throughput, затримка захисту, CPU/RAM, час відновлення
+каталогу, overhead адаптації; цілі задано для конкретного комп'ютера в
+[results/vault/targets.json](results/vault/targets.json) і перевіряє `python scripts/product_bench.py`.
+Числа отримано на одному диску й не є універсальною продуктивністю.
+
+**Межі.** Втрату живлення фізично не перевірено (аварії процесу — це `os._exit` у точках коду). Процеси
+демонстрації працюють на одному диску: це процесні й мережеві відмови, а не незалежні фізичні диски. Версії,
+що не дійшли до `protected`, гинуть разом із локальним диском. Локальний CLI ролей не має: межа — права ОС
+на каталог сховища. Ліміт комітів (≤ 1000 змінених текстових рядків на кожен коміт) перевіряє CI
+(`scripts/check_commit_size.py`).
+
 ## Структура
 
 ```
@@ -168,10 +209,17 @@ log3/
   vault/         файловий режим: формат об'єктів і маніфест, крипто, кодеки, каталог і черга SQLite,
                  backend-и (каталог, HTTPS-вузол), захоплення, реплікація, verify/repair/gc, restore, CLI
   vault/learn/   локальне навчання вибору стиснення: ознаки, журнал, моделі, цикл shadow/active/rollback
+  vault/keys.py, keyops.py  keyring, ротація, зміна фрази, експорт, підпис службових файлів
+  vault/ops.py   doctor, health, queue, find, drill, Prometheus; standalone_restore.py — restore без інсталяції
+  defense/       модуль захисту: виконавець, лабораторія, етапи, матриця відмов
 tests/           pytest: формат, крипто, еталонні пакети, ДП проти перебору, планувальник, тракт, NN, ГА, атака
-scripts/         reproduce.py; vault_bench.py і vault_corpus.py (вимірювання файлового режиму)
+scripts/         reproduce.py; vault_bench.py, vault_corpus.py, product_bench.py (вимірювання), build_release.py,
+                 check_commit_size.py
+deploy/          служби: systemd (клієнт, вузол), планувальник Windows
 results/         C1, таблиці звіту 1–6, матриця помилок, журнал і графік ГА, атака, final_metrics.json; vault/ — вимірювання файлового режиму
-docs/            REPORT.md (звіт), DECISIONS.md (лог рішень), FILE_MODE.md, LEARNING.md
+docs/            REPORT.md (звіт), DECISIONS.md (лог рішень), FILE_MODE.md, LEARNING.md, GUARANTEES.md,
+                 SECURITY.md, OPERATIONS.md, DEFENSE.md, DEPENDENCIES.md
+stage1.json, stage2.json, stage3.json   машинозчитуваний опис етапів
 META-USAGE.md    облік використання ШІ (обов'язковий артефакт курсу)
 ```
 
@@ -179,9 +227,9 @@ META-USAGE.md    облік використання ШІ (обов'язкови
 
 | Учасник | Зона |
 | :-- | :-- |
-| Гліб Степанов ([@Galactic717](https://github.com/Galactic717)), голова | формат LOG3, захист, відновлення, інтеграція, метрика, звіт |
-| [@yaroslavronenko-ux](https://github.com/yaroslavronenko-ux) | Гаффман, ДП, розміщення по вузлах |
-| [@artemkovbasuk780-hub](https://github.com/artemkovbasuk780-hub) | перцептрон, генетичний алгоритм, модуль атаки |
+| Гліб Степанов ([@Galactic717](https://github.com/Galactic717)), голова | формат LOG3, захист, відновлення, інтеграція, метрика, звіт; етап 3 — продукт, гарантії, ключі, модуль захисту |
+| [@yaroslavronenko-ux](https://github.com/yaroslavronenko-ux) | Гаффман, ДП, розміщення по вузлах; етап 1 — файлове ядро, черга, реплікація, restore, CLI |
+| [@artemkovbasuk780-hub](https://github.com/artemkovbasuk780-hub) | перцептрон, генетичний алгоритм, модуль атаки; етап 2 — локальне навчання вибору стиснення |
 
 Рішення кожної зони з обґрунтуванням — у [docs/DECISIONS.md](docs/DECISIONS.md), результати — у
 [docs/REPORT.md](docs/REPORT.md). Облік використання ШІ-інструментів, якого вимагає методичка, —

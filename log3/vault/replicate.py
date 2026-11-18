@@ -40,6 +40,14 @@ def pointer_name(version_id: str) -> str:
     return f"version-{version_id}.json"
 
 
+def pointer_doc(version_id: str, manifest_oid: str, length: int, sha256: str, created_ns: int) -> dict:
+    """Покажчик версії на backend-і. Підписаний (keys.sign_meta) під час публікації версії;
+    версії, прийняті до етапу 3, мають непідписаний, доки key publish його не підпише."""
+    return {"format": "log3-version-pointer", "format_version": 1, "version_id": version_id,
+            "manifest_oid": manifest_oid, "manifest_len": length, "manifest_sha256": sha256,
+            "created_at_ns": created_ns}
+
+
 def job_id(repo: Repo, oid: str, backend: str) -> str:
     return str(uuid.uuid5(uuid.UUID(repo.cfg["repo_id"]), f"{oid}:{backend}"))
 
@@ -144,8 +152,11 @@ def _execute(w: _Work) -> str | None:
         w.tmp.unlink(missing_ok=True)
 
 
-def _lease(repo: Repo) -> list:
+def _lease(repo: Repo, cutoff_ns: int | None = None) -> list:
+    """Бере в роботу завдання, час яких настав. cutoff_ns (прохід без очікування) — лише ті, що були
+    готові на початку проходу: повтор, запланований у цьому ж проході, чекає наступного."""
     cat, now, rows = repo.cat, now_ns(), []
+    due = now if cutoff_ns is None else min(now, cutoff_ns)
     with cat.tx():
         recovered = cat.x("UPDATE jobs SET state='PENDING', lease_until_ns=NULL WHERE state='RUNNING' "
                           "AND lease_until_ns<?", (now,))
@@ -154,7 +165,7 @@ def _lease(repo: Repo) -> list:
         for prio, share in WEIGHTS:
             rows += cat.q("SELECT j.*, o.kind, o.stored_len, o.sha256, o.in_spool FROM jobs j JOIN objects o "
                           "ON o.oid=j.oid WHERE j.state='PENDING' AND j.priority=? AND j.next_at_ns<=? "
-                          "ORDER BY j.enq_ns, j.job_id LIMIT ?", (prio, now, share * BATCH_UNIT))
+                          "ORDER BY j.enq_ns, j.job_id LIMIT ?", (prio, due, share * BATCH_UNIT))
         lease = now + int(repo.limits["lease_seconds"] * 1e9)
         for r in rows:
             cat.x("UPDATE jobs SET state='RUNNING', lease_until_ns=? WHERE job_id=?", (lease, r["job_id"]))
@@ -169,12 +180,10 @@ def _prepare(repo: Repo, r) -> _Work:
         if b in repo.backend_names()]
     metas = []
     if r["kind"] == KIND_MANIFEST:                         # покажчик версії та конфігурація без секретів:
-        metas.append((CONFIG_META, repo.config_bytes()))   # без них recover після втрати диска неможливий
-        for v in cat.q("SELECT version_id, created_ns FROM versions WHERE manifest_oid=?", (r["oid"],)):
-            metas.append((pointer_name(v["version_id"]), json.dumps({
-                "format": "log3-version-pointer", "format_version": 1, "version_id": v["version_id"],
-                "manifest_oid": r["oid"], "manifest_len": r["stored_len"], "manifest_sha256": r["sha256"],
-                "created_at_ns": v["created_ns"]}).encode()))
+        metas.append((CONFIG_META, repo.config_for_backends()))   # без них recover неможливий
+        for v in cat.q("SELECT version_id, created_ns, pointer FROM versions WHERE manifest_oid=?", (r["oid"],)):
+            metas.append((pointer_name(v["version_id"]), v["pointer"].encode() if v["pointer"] else json.dumps(
+                pointer_doc(v["version_id"], r["oid"], r["stored_len"], r["sha256"], v["created_ns"])).encode()))
     return _Work(r["job_id"], r["oid"], repo.backend(r["backend"]), r["stored_len"], r["sha256"],
                  spool if r["in_spool"] and spool.is_file() else None, sources, metas,
                  repo.spool / "tmp" / f"fetch-{r['job_id']}")
@@ -234,12 +243,13 @@ def run_queue(repo: Repo, *, wait: bool = True, deadline_ns: int | None = None,
     """Обробляє чергу. wait=False — лише завдання, час яких настав; wait=True — чекає повторів,
     доки черга не спорожніє, не вийде deadline або until_version не дійде до PROTECTED/DEGRADED."""
     cat, total = repo.cat, {"done": 0, "retry": 0, "attention": 0}
+    cutoff = None if wait else now_ns()                    # --once і служба: одна спроба на завдання за прохід
     with ThreadPoolExecutor(max_workers=repo.limits["max_parallel"]) as pool:
         while True:
             if until_version and cat.scalar("SELECT state FROM versions WHERE version_id=?",
                                             (until_version,)) in ("PROTECTED", "DEGRADED"):
                 break
-            rows = _lease(repo)
+            rows = _lease(repo, cutoff)
             if not rows:
                 nxt = cat.scalar("SELECT MIN(COALESCE(lease_until_ns, next_at_ns)) FROM jobs "
                                  "WHERE state IN ('PENDING','RUNNING')")

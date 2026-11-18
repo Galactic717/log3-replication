@@ -1,0 +1,24 @@
+# Віддалений вузол зберігання LOG3 Vault (Linux). Токени — у файлі з ролями (log3-vault node-token).
+[Unit]
+Description=LOG3 Vault storage node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=log3node
+Group=log3node
+Environment=LOG3_NODE_QUIET=0
+ExecStart=/opt/log3/bin/log3-vault serve-node --data /srv/log3-node --cert /etc/log3/node.crt \
+    --key /etc/log3/node.key --tokens-file /etc/log3/node-tokens.json --port 8443 --quota-bytes 0
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/log3-node
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+{
+ "12th Gen Intel(R) Core(TM) i7-12700H | 20 CPU | Windows": {
+  "hardware": "ноутбук: i7-12700H, 20 логічних CPU, Windows 11; сховище, backend і вузол на одному зовнішньому диску D: (USB)",
+  "basis": "перший вимір 2026-11-18: backup 11.2 МіБ/с, restore 10.7 МіБ/с, protected за 7.7 с для 114 МіБ, RSS 73 МіБ, адаптація +32 % CPU; цілі — із запасом на коливання диска",
+  "targets": {
+   "restore_identical_fraction": {"min": 1.0},
+   "policy_satisfied_fraction": {"min": 1.0},
+   "objects_under_replicated": {"max": 0},
+   "verify_ok_fraction": {"min": 1.0},
+   "backup_accept_mib_s": {"min": 6.0},
+   "restore_mib_s": {"min": 6.0},
+   "time_to_protected_seconds": {"max": 20.0},
+   "recover_catalog_seconds": {"max": 10.0},
+   "peak_rss_mib": {"max": 200.0},
+   "stored_to_plain_per_copy": {"max": 0.75},
+   "adaptation_cpu_overhead": {"max": 0.6}
+  }
+ }
+}

@@ -31,7 +31,7 @@ class Env:
     def cli(self, *args, env: dict | None = None) -> tuple[int, dict]:
         """(код завершення, JSON-вивід) команди в новому процесі."""
         p = subprocess.run(self.argv(*args), env={**self.env, **(env or {})}, capture_output=True, text=True,
-                           encoding="utf-8", timeout=300)
+                           encoding="utf-8", timeout=300, stdin=subprocess.DEVNULL)
         try:
             return p.returncode, json.loads(p.stdout)
         except ValueError:
@@ -42,7 +42,7 @@ class Env:
         assert code == 0, (args, code, out)
         return out
 
-    def start_node(self, *, fault: str | None = None, quota: int = 0) -> None:
+    def start_node(self, *, fault: str | None = None, quota: int = 0, tokens_file: Path | None = None) -> None:
         certs = self.tmp / "certs"
         if not certs.exists():
             self.ok("node-cert", "--dir", certs, "--host", "127.0.0.1")
@@ -54,7 +54,8 @@ class Env:
         self.node = subprocess.Popen(
             [sys.executable, "-m", "log3.vault", "serve-node", "--data", str(self.node_dir), "--cert",
              str(certs / "node.crt"), "--key", str(certs / "node.key"), "--host", "127.0.0.1", "--port",
-             str(self.port), "--quota-bytes", str(quota)], env=env, stderr=subprocess.DEVNULL)
+             str(self.port), "--quota-bytes", str(quota),
+             *(["--tokens-file", str(tokens_file)] if tokens_file else [])], env=env, stderr=subprocess.DEVNULL)
         for _ in range(200):
             try:
                 socket.create_connection(("127.0.0.1", self.port), timeout=0.2).close()
@@ -65,6 +66,8 @@ class Env:
 
     def stop_node(self) -> None:
         if self.node is not None:
+            if os.name == "nt":                         # python із venv у Windows — лаунчер із дочірнім процесом
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.node.pid)], capture_output=True)
             self.node.kill()
             self.node.wait()
             self.node = None

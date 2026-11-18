@@ -67,7 +67,8 @@ def test_learning_cannot_touch_deletion_retention_copies_permissions_or_encrypti
     stored = b"".join(p.read_bytes() for p in (tmp_path / "repo-disk").rglob("*") if p.is_file())
     assert b"confidential plaintext marker" not in stored                     # шифрування не вимикається
     restore(repo, vid, tmp_path / "out")
-    assert stat.S_IMODE((tmp_path / "out" / "secret.txt").stat().st_mode) == 0o600
+    if os.name == "posix":                                   # права POSIX; у Windows режим 0600 не відображається
+        assert stat.S_IMODE((tmp_path / "out" / "secret.txt").stat().st_mode) == 0o600
 
 
 def test_features_do_not_depend_on_chosen_action_and_labels_are_measured(tmp_path, monkeypatch):

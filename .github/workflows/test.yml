@@ -6,6 +6,27 @@ on:
   pull_request:
 
 jobs:
+  commit-size:
+    # до 1000 змінених текстових рядків на КОЖЕН новий коміт (не на весь PR)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: ліміт розміру комітів
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            RANGE="${{ github.sha }}~1..${{ github.sha }}"
+          else
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+          fi
+          python scripts/check_commit_size.py "$RANGE" --limit 1000
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -23,3 +44,35 @@ jobs:
       # пакета викладача в публічному репо нема: тести йдуть на dev-конфігу й dev-моделі,
       # кейси, яким потрібні materials/ (еталонні пакети, valid.csv), пропускаються
       - run: python -m pytest -q
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: тести файлового режиму на Windows
+        run: python -m pytest -q tests/test_vault_units.py tests/test_vault_keys.py tests/test_vault_e2e.py tests/test_vault_stage3.py tests/test_learn_e2e.py
+
+  defense:
+    # модуль захисту: dry-run усіх етапів і частина матриці відмов у нових процесах
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m log3.defense --profile full --dry-run --out defense-out
+      - run: python -m log3.defense --stage matrix:crash-after-accept --stage matrix:wrong-key --stage showcase --stage update --out defense-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: defense-summary
+          path: defense-out/*.json

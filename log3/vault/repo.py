@@ -5,8 +5,11 @@
     <repo>/spool/objects/    зашифровані об'єкти, які ще не виконали політику копій
     <repo>/spool/tmp/        незавершені записи (прибирає repair)
 
-Парольна фраза потрібна лише для backup, restore і recover. Черга (run), verify, repair, gc
+Парольна фраза потрібна лише для backup, restore, recover і команд key. Черга (run), verify, repair, gc
 працюють із уже зашифрованими об'єктами і секрету не потребують.
+
+Каталог сховища створюється з доступом лише для власника (fsutil.restrict_dir): у catalog.sqlite
+відкрито лежать шляхи файлів джерела, час і стани версій, тому межа доступу — права ОС.
 """
 from __future__ import annotations
 
@@ -20,9 +23,10 @@ from .backends.base import Backend
 from .backends.localdir import LocalDirBackend, ObjectDir
 from .backends.node_client import NodeBackend
 from .catalog import Catalog, now_ns
-from .cryptobox import PASSPHRASE_ENV, SUITE, CryptoBox, PassphraseKeys, new_kdf_params, read_secret
+from .cryptobox import PASSPHRASE_ENV, SUITE, CryptoBox, read_secret
 from .errors import Exit, VaultError
-from .fsutil import write_durable
+from .fsutil import restrict_dir, write_durable
+from .keys import MAX_OBJECTS_PER_KEY, RepoKeys, check_passphrase, new_kdf_params, sign_meta
 
 CONFIG_FORMAT = "log3-vault-config"
 CONFIG_VERSION = 1
@@ -46,7 +50,7 @@ def new_config(*, min_copies: int = 2, chunk_size: int = MIB, kdf_n: int = 2 ** 
     return {"format": CONFIG_FORMAT, "format_version": CONFIG_VERSION, "repo_id": str(uuid.uuid4()),
             "created_at_ns": now_ns(), "chunk_size_bytes": chunk_size,
             "crypto": {"suite": SUITE, "kdf": new_kdf_params(kdf_n), "key_id": None,
-                       "passphrase_env": PASSPHRASE_ENV},
+                       "passphrase_env": PASSPHRASE_ENV, "max_objects_per_key": MAX_OBJECTS_PER_KEY},
             "compression": {"codec": "zstd", "level": 3, "advisor": None},
             "learning": {"enabled": True},          # решта — типові значення log3.vault.learn.settings
             "policy": {**DEFAULT_POLICY, "min_copies": min_copies},
@@ -86,20 +90,30 @@ class Repo:
         self.cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         validate_config(self.cfg)
         self.spool = self.path / "spool"
-        self.cat = Catalog(self.path / "catalog.sqlite")
+        crypto = self.cfg["crypto"]
+        self.cat = Catalog(self.path / "catalog.sqlite",
+                           legacy_key_id=None if crypto.get("keyring") else crypto.get("key_id"))
         self._backends: dict[str, Backend] = {}
 
     @classmethod
-    def create(cls, path: Path, cfg: dict, passphrase: bytes) -> Repo:
+    def create(cls, path: Path, cfg: dict, passphrase: bytes, *, new_secret: bool = True) -> Repo:
+        """new_secret=False — recover: фраза вже існує, перевіряється відповідність keyring."""
         path = Path(path).absolute()
         if (path / "config.json").exists():
             raise VaultError("E_EXISTS", f"у {path} вже є сховище")
-        cfg["crypto"]["key_id"] = PassphraseKeys(passphrase, cfg["crypto"]["kdf"]).key_id
+        keys = RepoKeys(check_passphrase(passphrase) if new_secret else passphrase, cfg["crypto"])
+        cfg["crypto"]["key_id"] = keys.key_id
         validate_config(cfg)
+        path.mkdir(parents=True, exist_ok=True)
+        access = restrict_dir(path)                         # каталог і індекс — лише власнику
         for sub in ("spool/objects", "spool/tmp"):
             (path / sub).mkdir(parents=True, exist_ok=True)
         write_durable(path / "config.json", [json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")])
-        return cls(path)
+        repo = cls(path)
+        repo.__dict__["keys"] = keys
+        repo.sign_config()
+        repo.cat.set_meta("access_restriction", access)
+        return repo
 
     def save_config(self) -> None:
         validate_config(self.cfg)
@@ -109,12 +123,29 @@ class Repo:
         return json.dumps(self.cfg, ensure_ascii=False, indent=2).encode("utf-8")
 
     @cached_property
-    def box(self) -> CryptoBox:
+    def keys(self) -> RepoKeys:
         crypto = self.cfg["crypto"]
-        keys = PassphraseKeys(read_secret(crypto["passphrase_env"], prompt="Парольна фраза сховища: "), crypto["kdf"])
+        keys = RepoKeys(read_secret(crypto["passphrase_env"], prompt="Парольна фраза сховища: "), crypto)
         if keys.key_id != crypto["key_id"]:
             raise VaultError("E_KEY", "парольна фраза не відповідає цьому сховищу", Exit.KEY)
-        return CryptoBox(keys)
+        return keys
+
+    @cached_property
+    def box(self) -> CryptoBox:
+        return CryptoBox(self.keys)
+
+    def sign_config(self) -> bytes:
+        """Підписана копія конфігурації для backend-ів (потрібен ключ). Черга без секрету бере
+        останню підписану копію з каталогу, тож зміни без фрази (backend add) потраплять на
+        backend-и з наступним backup або командою key publish."""
+        from .replicate import CONFIG_META
+        signed = sign_meta(self.keys.meta_key(), CONFIG_META, self.cfg)
+        self.cat.set_meta("signed_config", signed.decode("utf-8"))
+        return signed
+
+    def config_for_backends(self) -> bytes:
+        signed = self.cat.scalar("SELECT value FROM meta WHERE key='signed_config'")
+        return signed.encode("utf-8") if signed else self.config_bytes()   # сховище до етапу 3: без підпису
 
     @property
     def limits(self) -> dict:

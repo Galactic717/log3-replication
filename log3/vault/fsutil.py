@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
+import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -75,3 +77,50 @@ def sha256_file(path: Path) -> tuple[int, str]:
 
 def free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
+
+
+_RESTRICT_PS = (
+    "$s=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+    "$acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true,$false);"
+    "foreach($x in @($s,'S-1-5-18','S-1-5-32-544')){$acl.AddAccessRule((New-Object "
+    "Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $x),"
+    "'FullControl','ContainerInherit,ObjectInherit','None','Allow')))};"
+    "(Get-Item -LiteralPath $env:L3P).SetAccessControl($acl)")
+
+
+def restrict_dir(path: Path) -> str:
+    """Доступ до каталогу лише власнику: POSIX 0700; Windows — новий DACL без успадкування й без
+    сторонніх явних записів: лише власник, SYSTEM і Адміністратори (SID, тож працює в локалізованих
+    Windows). Повертає опис результату."""
+    if os.name == "posix":
+        os.chmod(path, 0o700)
+        return "posix-0700"
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _RESTRICT_PS],
+                           capture_output=True, text=True, env={**os.environ, "L3P": str(path)}, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return "windows-acl-unavailable"
+    return "windows-acl" if r.returncode == 0 and not r.stderr.strip() else "windows-acl-unsupported"
+
+
+def access_report(path: Path) -> dict:
+    """Хто ще, крім власника, має доступ до каталогу (для doctor)."""
+    if os.name == "posix":
+        mode = os.stat(path).st_mode & 0o777
+        return {"mode": oct(mode), "others_have_access": bool(mode & 0o077)}
+    # правила одразу як SID: перекладати імена не треба (у CI-раннерах і доменах переклад падає)
+    ps = ("try{$a=[IO.Directory]::GetAccessControl($env:L3P);"
+          "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+          "$r=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));"
+          "@{user=$u; inherited=[bool]($r|?{$_.IsInherited}); sids=@($r|%{[string]$_.IdentityReference.Value})}"
+          "|ConvertTo-Json -Compress}catch{@{error=[string]$_.Exception.Message}|ConvertTo-Json -Compress}")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
+                           text=True, env={**os.environ, "L3P": str(path)}, timeout=60)
+        d = json.loads(r.stdout)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        d = {"error": "powershell недоступний або повернув не JSON"}
+    if "error" in d or not d.get("sids") or None in d["sids"]:     # не змогли прочитати — «невідомо», не «так/ні»
+        return {"acl": "unknown", "error": str(d.get("error", "порожній ACL"))[:200], "others_have_access": None}
+    others = sorted(set(d["sids"]) - {d["user"], "S-1-5-18", "S-1-5-32-544"})
+    return {"acl_inherited": d["inherited"], "other_sids": others, "others_have_access": bool(others) or d["inherited"]}

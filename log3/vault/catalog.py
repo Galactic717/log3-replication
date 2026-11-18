@@ -11,18 +11,24 @@
   відновлення                          незавершена транзакція відкочується SQLite при наступному
                                        відкритті; integrity_check запускає команда repair.
 Від фізичної втрати диска каталог не захищає: для цього є копії на backend-ах і команда recover.
+
+Міграції схеми виконуються автоматично при відкритті новішою версією програми: спершу повна копія
+каталогу в <repo>/backups/ (SQLite backup API), потім одна транзакція зі зміною схеми. Аварія під
+час міграції відкочує транзакцію — каталог лишається попередньої версії, а стара програма з ним
+працює. Новішу схему стара програма не відкриває (E_SCHEMA); повернення — `migrate restore`.
 """
 from __future__ import annotations
 
 import sqlite3
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
-from .errors import Exit, VaultError
+from .errors import Exit, VaultError, crashpoint
 from .states import check_transition
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS files(
@@ -31,13 +37,14 @@ CREATE TABLE IF NOT EXISTS files(
 CREATE INDEX IF NOT EXISTS files_inode ON files(root, dev, ino);
 CREATE TABLE IF NOT EXISTS objects(
   oid TEXT PRIMARY KEY, kind INTEGER NOT NULL, stored_len INTEGER NOT NULL, sha256 TEXT NOT NULL,
-  plain_len INTEGER NOT NULL, codec INTEGER NOT NULL, in_spool INTEGER NOT NULL, created_ns INTEGER NOT NULL);
+  plain_len INTEGER NOT NULL, codec INTEGER NOT NULL, in_spool INTEGER NOT NULL, created_ns INTEGER NOT NULL,
+  key_id TEXT);
 CREATE TABLE IF NOT EXISTS versions(
   version_id TEXT PRIMARY KEY, op_id TEXT NOT NULL, name TEXT NOT NULL, root TEXT NOT NULL, state TEXT NOT NULL,
   priority INTEGER NOT NULL, min_copies INTEGER NOT NULL, target_copies INTEGER NOT NULL, manifest_oid TEXT,
   created_ns INTEGER NOT NULL, heartbeat_ns INTEGER NOT NULL, accepted_ns INTEGER, protected_ns INTEGER,
   retention_until_ns INTEGER, files INTEGER DEFAULT 0, bytes INTEGER DEFAULT 0, skipped INTEGER DEFAULT 0,
-  error TEXT);
+  error TEXT, pointer TEXT);
 CREATE INDEX IF NOT EXISTS versions_op ON versions(op_id);
 CREATE TABLE IF NOT EXISTS version_objects(
   version_id TEXT NOT NULL, oid TEXT NOT NULL, PRIMARY KEY(version_id, oid)) WITHOUT ROWID;
@@ -61,8 +68,16 @@ def now_ns() -> int:
     return time.time_ns()
 
 
+#: міграції: версія -> SQL; кожна виконується в одній транзакції разом зі зміною schema_version
+MIGRATIONS = {
+    2: ("ALTER TABLE objects ADD COLUMN key_id TEXT",        # яким ключем зашифровано об'єкт (ротація)
+        "ALTER TABLE versions ADD COLUMN pointer TEXT"),      # підписаний покажчик версії для backend-ів
+}
+
+
 class Catalog:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, legacy_key_id: str | None = None):
+        self.path = Path(path)
         self.db = sqlite3.connect(path, isolation_level=None, timeout=60)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -76,8 +91,32 @@ class Catalog:
             got = self.one("SELECT value FROM meta WHERE key='schema_version'")
             if got is None:
                 self.db.execute("INSERT INTO meta VALUES('schema_version', ?)", (str(SCHEMA_VERSION),))
-            elif int(got[0]) != SCHEMA_VERSION:
-                raise VaultError("E_SCHEMA", f"схема каталогу {got[0]}, підтримується {SCHEMA_VERSION}")
+            elif int(got[0]) > SCHEMA_VERSION:
+                raise VaultError("E_SCHEMA", f"схема каталогу {got[0]} новіша за підтримувану {SCHEMA_VERSION}: "
+                                 "оновіть програму або поверніть копію командою migrate restore")
+        current = int(self.scalar("SELECT value FROM meta WHERE key='schema_version'"))
+        if current < SCHEMA_VERSION:
+            self._migrate(current, legacy_key_id)
+
+    def _migrate(self, current: int, legacy_key_id: str | None) -> None:
+        backups = self.path.parent / "backups"
+        backups.mkdir(exist_ok=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        copy = backups / f"catalog-schema{current}-{stamp}.sqlite"
+        dst = sqlite3.connect(copy)
+        try:
+            self.db.backup(dst)                                 # повна копія до зміни схеми
+        finally:
+            dst.close()
+        with self.tx():
+            for version in range(current + 1, SCHEMA_VERSION + 1):
+                for sql in MIGRATIONS[version]:
+                    self.db.execute(sql)
+            if legacy_key_id:                                   # сховища до keyring мали один ключ
+                self.x("UPDATE objects SET key_id=? WHERE key_id IS NULL", (legacy_key_id,))
+            crashpoint("catalog.migrate_before_commit")
+            self.set_meta("schema_version", str(SCHEMA_VERSION))
+            self.event("migration", SCHEMA_VERSION, f"schema {current}->{SCHEMA_VERSION}; backup {copy.name}")
 
     @contextmanager
     def tx(self):
@@ -125,6 +164,15 @@ class Catalog:
 
     def set_meta(self, key: str, value: str) -> None:
         self.x("INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def sealed_count(self, key_id: str) -> int:
+        """Скільки об'єктів зашифровано ключем (монотонно: GC лічильник не зменшує)."""
+        return int(self.scalar("SELECT value FROM meta WHERE key=?", (f"sealed:{key_id}",)) or 0)
+
+    def count_sealed(self, key_id: str, n: int) -> None:
+        if n:
+            with self.tx():
+                self.set_meta(f"sealed:{key_id}", str(self.sealed_count(key_id) + n))
 
     def set_state(self, version_id: str, new: str, **fields) -> None:
         """Єдине місце зміни стану версії; заборонений перехід -> VaultError."""
