@@ -222,7 +222,7 @@ def test_restore_refuses_overwrite_symlinks_and_wrong_key(env, tmp_path):
     env.ok("restore", vid, out_dir)
     code, out = env.cli("restore", vid, out_dir)
     assert code == 1 and out["error"]["code"] == "E_EXISTS"        # неочікуваний перезапис заборонено
-    (out_dir / "порожній.txt").write_text("локальна правка")
+    (out_dir / "порожній.txt").write_text("локальна правка", encoding="utf-8")
     env.ok("restore", vid, out_dir, "--overwrite")
     assert tree(out_dir) == tree(src)
     assert not list(out_dir.glob(".log3-restore-*"))               # staging прибрано

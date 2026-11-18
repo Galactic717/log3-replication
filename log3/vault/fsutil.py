@@ -79,24 +79,28 @@ def free_bytes(path: Path) -> int:
     return shutil.disk_usage(path).free
 
 
-def _windows_user_sid() -> str:
-    out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True, text=True, check=True).stdout
-    return out.strip().rsplit(",", 1)[1].strip('"')
+_RESTRICT_PS = (
+    "$s=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+    "$acl=New-Object Security.AccessControl.DirectorySecurity; $acl.SetAccessRuleProtection($true,$false);"
+    "foreach($x in @($s,'S-1-5-18','S-1-5-32-544')){$acl.AddAccessRule((New-Object "
+    "Security.AccessControl.FileSystemAccessRule((New-Object Security.Principal.SecurityIdentifier $x),"
+    "'FullControl','ContainerInherit,ObjectInherit','None','Allow')))};"
+    "(Get-Item -LiteralPath $env:L3P).SetAccessControl($acl)")
 
 
 def restrict_dir(path: Path) -> str:
-    """Доступ до каталогу лише власнику: POSIX 0700; Windows — ACL без успадкування для власника,
-    SYSTEM і Адміністраторів (SID, тож працює в локалізованих Windows). Повертає опис результату."""
+    """Доступ до каталогу лише власнику: POSIX 0700; Windows — новий DACL без успадкування й без
+    сторонніх явних записів: лише власник, SYSTEM і Адміністратори (SID, тож працює в локалізованих
+    Windows). Повертає опис результату."""
     if os.name == "posix":
         os.chmod(path, 0o700)
         return "posix-0700"
     try:
-        grants = [a for sid in (_windows_user_sid(), "S-1-5-18", "S-1-5-32-544")
-                  for a in ("/grant:r", f"*{sid}:(OI)(CI)F")]
-        r = subprocess.run(["icacls", str(path), "/inheritance:r", *grants], capture_output=True, text=True)
-    except (OSError, subprocess.CalledProcessError, IndexError):
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", _RESTRICT_PS],
+                           capture_output=True, text=True, env={**os.environ, "L3P": str(path)}, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
         return "windows-acl-unavailable"
-    return "windows-acl" if r.returncode == 0 else "windows-acl-unsupported"
+    return "windows-acl" if r.returncode == 0 and not r.stderr.strip() else "windows-acl-unsupported"
 
 
 def access_report(path: Path) -> dict:
@@ -104,9 +108,10 @@ def access_report(path: Path) -> dict:
     if os.name == "posix":
         mode = os.stat(path).st_mode & 0o777
         return {"mode": oct(mode), "others_have_access": bool(mode & 0o077)}
+    # правила одразу як SID: перекладати імена не треба (у CI-раннерах і доменах переклад падає)
     ps = ("$a=Get-Acl -LiteralPath $env:L3P; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
-          "@{user=$u; inherited=[bool]($a.Access|?{$_.IsInherited}); sids=@($a.Access|%{"
-          "try{$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value}catch{'?'}})}"
+          "$r=$a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);"
+          "@{user=$u; inherited=[bool]($r|?{$_.IsInherited}); sids=@($r|%{$_.IdentityReference.Value})}"
           "|ConvertTo-Json -Compress")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
