@@ -167,9 +167,10 @@ def m5(ctx: Ctx) -> list[Step]:
         return f"{err}: відмова до стійкого приймання, прийнятих версій 0, файлів у spool {files}"
 
     def quota(c: Ctx, r: Result) -> str:
+        state = expect_state(lab, "DEGRADED", "v", False)(c, r)
         used = lab.ledger("SELECT COALESCE(SUM(length),0) FROM charges")[0][0]
         assert used <= 200_000, used
-        return expect_state(lab, "DEGRADED", "v", False)(c, r) + f"; на вузлі зайнято {used} B ≤ квоти 200000 B"
+        return f"{state}; на вузлі зайнято {used} B ≤ квоти 200000 B"
     return lab.setup() + [
         Step("локальний диск «заповнено»: min_free_bytes більше за вільне місце",
              action=lambda c: lab.set_limits(min_free_bytes=10 ** 18)),

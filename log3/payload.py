@@ -79,10 +79,10 @@ def build_payload(records: list[Record], *, compress: bool = True,
     Поріг: якщо стиснений payload > поріг × сирий, пишемо сирі байти з NO_COMPRESSION.
     None = 1.0, тобто обираємо коротший варіант.
     """
-    raw = pack_records(records)
     n = len(records)
     if n > 0xFFFF:
         raise ValueError("record_count не вміщається в u16")
+    raw = pack_records(records)
     flags = 0
     tail = b""
     if class_table is not None:
@@ -131,7 +131,8 @@ def parse_payload(payload: bytes) -> ParsedPayload:
     if symbol_count != RECORD_SIZE * n:
         raise PayloadError("symbol_count != 16 * record_count")
 
-    tail = n if flags & FLAG_CLASS_TABLE else 0
+    has_class_table = bool(flags & FLAG_CLASS_TABLE)
+    tail = n if has_class_table else 0
     if pos + bitstream_len + tail != len(payload):
         raise PayloadError("довжина payload не збігається з bitstream_len і class_table")
     stream = payload[pos:pos + bitstream_len]
@@ -161,7 +162,7 @@ def parse_payload(payload: bytes) -> ParsedPayload:
         raise PayloadError(f"запис: {e}") from None
 
     class_table = None
-    if tail:
+    if has_class_table:
         class_table = list(payload[pos:pos + n])
         if any(c > MAX_CLASS for c in class_table):
             raise PayloadError("class_table: зарезервоване значення класу")

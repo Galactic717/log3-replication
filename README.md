@@ -41,23 +41,43 @@ session.csv → [1] перцептрон (клас 0/1/2) → v_i = priority(к�
 
 ## Запуск
 
-Потрібен Python ≥ 3.11.
+Потрібен Python ≥ 3.11. Відкрийте термінал у корені клону. Для перехресного оцінювання після клонування
+перейдіть на commit або tag, який передала команда (`git checkout <commit-або-tag>`).
 
-```bash
-python -m venv .venv
-.venv/Scripts/activate            # Linux/macOS: source .venv/bin/activate
-pip install -r requirements.txt
+**Windows (PowerShell)**
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m log3.pipeline --no-ga
+.\.venv\Scripts\python.exe -m pytest -q
 ```
+
+**Linux / macOS**
+
+```sh
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m log3.pipeline --no-ga
+python -m pytest -q
+```
+
+У командах нижче `python` означає інтерпретатор середовища `.venv`. У PowerShell можна активувати
+його через `.\.venv\Scripts\Activate.ps1` або в кожній команді замінювати `python` на
+`.\.venv\Scripts\python.exe`.
 
 Пакет викладача кладуть у `materials/` (у git його нема: у `team_config.json` пароль сеансу, а репозиторій
-публічний):
+публічний). Якщо архів містить каталог `team/`, скопіюйте його вміст безпосередньо до `materials/`.
 
 ```
-materials/team_config.json  replication.py  session.csv  session.bin  train.csv  valid.csv
-materials/reference/ref_*.bin|json  bad_*.bin  expected_failures.json
-materials/FORMAT_SPEC_P3.md
+materials/
+  team_config.json  replication.py  session.csv  session.bin  train.csv  valid.csv
+  reference/
+    ref_*.bin  ref_*.json  bad_*.bin  expected_failures.json
 ```
 
+Якщо `FORMAT_SPEC_P3.md` видано окремо, використовуйте його для звірки формату під час рев'ю.
 Без `materials/` усе працює на `config/team_config.dev.json` і dev-моделі `log3/devsim.py` (так іде CI);
 кейси, яким потрібні дані викладача, пропускаються.
 
@@ -70,10 +90,37 @@ materials/FORMAT_SPEC_P3.md
 | ГА проти random search | `python -m log3.ga.search` |
 | Сценарій атаки | `python -m log3.attack` |
 | Повне відтворення всіх результатів | `python scripts/reproduce.py` |
-| Тести і лінтер | `python -m pytest -q` · `ruff check .` |
+| Усі тести | `python -m pytest -q` |
+| Лінтер | `python -m pip install ruff==0.17.5`, потім `python -m ruff check .` |
 
 `scripts/reproduce.py` по черзі навчає перцептрон, запускає ГА, атаку, приймальні кейси C1 і генерує всі
 таблиці звіту в `results/` (≈ 15 хв на 20 ядрах; `--skip-train --skip-ga` бере збережені модель і параметри).
+
+### Перехресне оцінювання: обмін репліками LOG3 v1
+
+`log3.exchange` кодує один файл сирих 16-байтових записів у базову репліку та відновлює записи у вихідному
+порядку, включно з дублікатами. Команда приймає від 0 до 65 535 записів. `pack --no-compression` примусово
+записує їх без стиснення. `pack` і `unpack` запитують пароль репліки. Для автоматизованого прогону його можна
+задати змінною `LOG3_REPLICA_PASSWORD`. Обидві команди очікують новий шлях вихідного файла.
+
+```sh
+python -c "from pathlib import Path; Path('events.bin').write_bytes(bytes([1]) * 16)"
+python -m log3.exchange pack events.bin replica.bin
+python -m log3.exchange unpack replica.bin restored.bin
+python -c "from pathlib import Path; assert Path('events.bin').read_bytes() == Path('restored.bin').read_bytes(); print('OK')"
+```
+
+Для обміну передайте commit або tag, 2–3 репліки разом із відповідними початковими `.bin` та пароль,
+призначений для цих зразків. Порівняйте відновлені файли з початковими в обох напрямах. Сумісність
+перевіряйте для базового LOG3 v1. Формат файлового сховища LOG3 Vault має окремий протокол.
+
+- `python -m pytest -q tests/test_exchange.py` перевіряє нові записи, порожній файл, один запис,
+  алфавіт з одного байта на максимальному розмірі пакета й контрольовані відмови для пошкоджених копій.
+- `python -m pytest -q tests/test_replica.py::test_c1_12_reference_packets` читає шість виданих правильних
+  реплік, відтворює їх побайтово й звіряє коди семи пошкоджених з `expected_failures.json` у `materials/reference/`.
+- `unpack` друкує код відмови в stderr і повертає 1. Змінений шифротекст дає `E_HMAC`. Якщо залишилося
+  щонайменше 75 байтів, обрізання або неможлива довжина дають `E_LENGTH`. Коротший файл дає `E_SHORT`.
+  Вихідний файл відкривається лише після успішного декодування.
 
 ### Як розрізняти й відтворювати експерименти
 
@@ -170,7 +217,8 @@ python log3_restore.py --backend /mnt/usb/log3 restore latest ./out   # без �
 **Захист.** `python -m log3.defense` (quick) або `--profile full`; `--step` — покроково, `--dry-run` —
 лише план, `--stage NAME` — окремий етап. Модуль запускає справжні команди й для кожного кроку показує мету,
 команду без секретів, живий вивід, тривалість, код завершення й перевірений результат; журнал і JSON-підсумок —
-у `defense-out/`. Сценарії учасників — [docs/DEFENSE.md](docs/DEFENSE.md).
+у `defense-out/`. Для всіх дев'яти сценаріїв матриці запустіть
+`python -m log3.defense --profile full --stage matrix`. Сценарії учасників — [docs/DEFENSE.md](docs/DEFENSE.md).
 
 **Гарантії** ([docs/GUARANTEES.md](docs/GUARANTEES.md)): що означають локальне приймання, запис копії й
 `protected`; які відмови витримує кожен стан; що потрібно для restore; переповнення й повтори; матриця з 9
@@ -198,6 +246,7 @@ log3/
   payload.py     payload LOG3, NO_COMPRESSION, class_table, строгий розбір
   crypto.py      PBKDF2-HMAC-SHA256, AES-256-CTR, HMAC-SHA256
   replica.py     репліка: заголовок 43 B | шифротекст | HMAC 32 B, приймання в порядку §5
+  exchange.py    командний обмін базовими репліками, pack/unpack для побайтової звірки
   recovery.py    приймання всіх реплік, дедуплікація за 16-байтовим поданням
   config.py      team_config.json → Config, сценарії, перевірки
   pipeline.py    наскрізний тракт, метрика Q, фітнес для ГА, CLI
