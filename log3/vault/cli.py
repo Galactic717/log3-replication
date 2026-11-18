@@ -1,8 +1,9 @@
 """CLI файлового режиму: python -m log3.vault <команда> --repo <каталог> [--json]
 
 Команди: init, backend, backup, run, list, status, verify, restore, repair, gc, recover,
-serve-node, node-cert. З --json кожна команда друкує в stdout один JSON-об'єкт із полями
-ok, command, exit_code, exit_name; коди завершення стабільні (errors.Exit).
+serve-node, node-cert, learn (локальне навчання вибору стиснення). З --json кожна команда друкує
+в stdout один JSON-об'єкт із полями ok, command, exit_code, exit_name; коди завершення стабільні
+(errors.Exit).
 
 backup без --wait лише приймає версію локально й ставить реплікацію в чергу (рівень
 accepted_local, код 0). backup --wait сам обробляє чергу і повертає 0 тільки для рівня
@@ -11,6 +12,7 @@ protected. Секрети передаються змінними середов
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -18,13 +20,17 @@ from pathlib import Path
 
 from . import __version__, maintain
 from .backends.node_server import TOKEN_ENV, NodeServer, make_node_cert, server_tls
-from .capture import backup
 from .catalog import now_ns
 from .cryptobox import PASSPHRASE_ENV, read_secret
 from .errors import BackendError, Exit, VaultError
 from .replicate import run_queue
 from .repo import MIB, PRIORITIES, Repo, add_backend, make_backend, new_config
 from .restore import restore
+
+try:                                         # навчання — необов'язкова частина: без нього решта CLI працює
+    from .learn import cli as learn_cli
+except Exception:                            # pragma: no cover — лише якщо пакет навчання зламано
+    learn_cli = None
 
 REPO_ENV = "LOG3_VAULT_REPO"
 
@@ -72,6 +78,7 @@ def _parser() -> argparse.ArgumentParser:
     c = cmd("run", "обробити чергу реплікації")
     c.add_argument("--once", action="store_true", help="лише завдання, час яких настав; не чекати повторів")
     c.add_argument("--timeout", type=float, help="секунд; типово до спорожнення черги")
+    c.add_argument("--no-learn", action="store_true", help="не виконувати крок циклу навчання після черги")
     cmd("list", "перелік версій")
     c = cmd("status", "стан сховища з показниками або стан однієї версії")
     c.add_argument("version", nargs="?")
@@ -101,7 +108,28 @@ def _parser() -> argparse.ArgumentParser:
     c = cmd("node-cert", "створити самопідписаний сертифікат вузла")
     c.add_argument("--dir", required=True)
     c.add_argument("--host", action="append", required=True, help="ім'я або IP вузла; можна кілька")
+    if learn_cli is not None:
+        learn_cli.add_parser(sub, common)
     return p
+
+
+def _priority(repo: Repo, kind: str):
+    """Позначка для навчання: іде restore/repair, тож проби й навчання поступаються. Будь-який збій
+    позначки ігнорується — restore і repair від навчання не залежать."""
+    try:
+        from .learn.settings import priority
+        return priority(repo.path, kind)
+    except Exception:
+        return contextlib.nullcontext()
+
+
+def _learning_summary(repo: Repo, version_id: str) -> dict | None:
+    row = repo.cat.one("SELECT detail FROM events WHERE kind='learning' AND detail LIKE ? ORDER BY id DESC LIMIT 1",
+                       (f'%"{version_id}"%',))
+    try:
+        return json.loads(row[0]) if row else None
+    except ValueError:
+        return None
 
 
 def _spec(a) -> dict:
@@ -165,21 +193,33 @@ def _run(a) -> tuple[Exit, dict]:
                                       for b in repo.cfg["backends"]],
                          "independent_failure_domains": len(set(doms.values())),
                          "min_copies": repo.policy["min_copies"]}
+    if cmd == "learn":
+        if learn_cli is None:
+            raise VaultError("E_LEARN", "пакет навчання недоступний; копіювання працює на базовій політиці")
+        return learn_cli.run(a, repo)
     if cmd == "backup":
+        from .capture import backup
         vid, repeated = backup(repo, Path(a.source), name=a.name, priority=PRIORITIES[a.priority], op_id=a.op_id)
         if a.wait:
             run_queue(repo, deadline_ns=now_ns() + int(a.timeout * 1e9), until_version=vid)
+            if learn_cli is not None:
+                with contextlib.suppress(Exception):          # стадії захисту для журналу навчання
+                    learn_cli.L.collect(repo)
         view = maintain.version_view(repo, repo.cat.find_version(vid))
         code = _state_exit(view["state"]) if a.wait else Exit.OK
         if code == Exit.OK and view["skipped_files"]:
             code = Exit.PARTIAL
-        return code, {"version": view, "waited": a.wait, "repeated_operation": repeated}
+        return code, {"version": view, "waited": a.wait, "repeated_operation": repeated,
+                      "learning": _learning_summary(repo, vid)}
     if cmd == "run":
         summary = run_queue(repo, wait=not a.once,
                             deadline_ns=None if a.timeout is None else now_ns() + int(a.timeout * 1e9))
         m = maintain.metrics(repo)
         code = Exit.ATTENTION if m["queue_attention_jobs"] else Exit.NOT_PROTECTED if m["queue_jobs"] else Exit.OK
-        return code, {"queue": summary, "metrics": m}
+        out = {"queue": summary, "metrics": m}
+        if learn_cli is not None and not a.no_learn:
+            out["learning"] = learn_cli.after_run(repo)       # навчання — після основного захисту
+        return code, out
     if cmd == "list":
         rows = repo.cat.q("SELECT * FROM versions WHERE state!='DELETED' ORDER BY created_ns")
         return Exit.OK, {"versions": [maintain.version_view(repo, v) for v in rows]}
@@ -191,18 +231,31 @@ def _run(a) -> tuple[Exit, dict]:
         s = m["versions_by_state"]
         code = Exit.ATTENTION if s.get("DEGRADED") or m["queue_attention_jobs"] else \
             Exit.NOT_PROTECTED if m["under_replicated_versions"] else Exit.OK
-        return code, {"repo": str(repo.path), "metrics": m,
-                      "backends": [b["name"] for b in repo.cfg["backends"]]}
+        out = {"repo": str(repo.path), "metrics": m, "backends": [b["name"] for b in repo.cfg["backends"]]}
+        if learn_cli is not None:
+            try:
+                ls = learn_cli.status(repo)
+                out["learning"] = {"mode": ls["state"]["mode"], "active_model": ls["state"]["active_model"],
+                                   "paused": ls["state"]["paused"], "disabled": ls["state"]["disabled"],
+                                   "frozen": ls["state"]["frozen"], "errors_total": ls["learning_errors_total"]}
+            except Exception as e:
+                out["learning"] = {"error": type(e).__name__}
+        return code, out
     if cmd == "verify":
         vid = repo.cat.find_version(a.version)["version_id"] if a.version else None
         out = maintain.verify(repo, vid)
+        if learn_cli is not None:
+            with contextlib.suppress(Exception):              # стадія «перевірено читанням» для журналу
+                learn_cli.L.collect(repo)
         code = Exit.INTEGRITY if out["missing"] or out["corrupt"] or out["spool_corrupt"] else \
             Exit.ATTENTION if out["unreachable"] else Exit.OK
         return code, {"verify": out}
     if cmd == "restore":
-        return Exit.OK, {"restore": restore(repo, a.version, Path(a.dest), overwrite=a.overwrite, only=a.path)}
+        with _priority(repo, "restore"):
+            return Exit.OK, {"restore": restore(repo, a.version, Path(a.dest), overwrite=a.overwrite, only=a.path)}
     if cmd == "repair":
-        out = maintain.repair(repo, all_backends=a.all_backends, run=not a.no_run, timeout=a.timeout)
+        with _priority(repo, "repair"):
+            out = maintain.repair(repo, all_backends=a.all_backends, run=not a.no_run, timeout=a.timeout)
         return (Exit.ATTENTION if out["versions_not_protected"] else Exit.OK), {"repair": out}
     out = maintain.gc(repo, apply=a.apply)
     return (Exit.ERROR if out["delete_errors"] else Exit.OK), {"gc": out}
@@ -219,7 +272,7 @@ def _human(data: dict, code: Exit) -> str:
                         f"{copies['objects_total']})" if copies else ""))
         lines.append(f"  файлів: {v['files']}  байтів: {v['bytes']}  пропущено: {v['skipped_files']}"
                      + (f"  помилка: {v['error']}" if v["error"] else ""))
-    for key in ("metrics", "verify", "restore", "repair", "gc", "queue", "backends"):
+    for key in ("metrics", "verify", "restore", "repair", "gc", "queue", "backends", "learning", "learning_config"):
         if key in data:
             lines.append(f"{key}: " + json.dumps(data[key], ensure_ascii=False, indent=2))
     for key in ("repo", "repo_id", "key_id", "cert", "key", "objects"):

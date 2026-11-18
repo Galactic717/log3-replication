@@ -19,6 +19,7 @@ PARTIAL. Це захист від рваного читання одного ф�
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat as stat_mod
 import time
@@ -33,6 +34,7 @@ from .catalog import now_ns
 from .cryptobox import KIND_CHUNK, KIND_MANIFEST, OBJECT_FORMAT_VERSION, SUITE
 from .errors import Exit, VaultError, crashpoint
 from .fsutil import free_bytes, fsync_dir, write_durable
+from .learn.runtime import group_key, runtime_for
 from .replicate import ensure_jobs
 from .repo import Repo
 from .states import VersionState
@@ -54,6 +56,7 @@ class _Capture:
         comp = repo.cfg["compression"]
         self.codec, self.level = comp["codec"], comp["level"]
         self.advisor = load_advisor(comp.get("advisor"))
+        self.learn = runtime_for(repo, version_id, op_id, self.advisor)   # збій навчання -> базова політика
         self.objs: dict[str, dict] = {}        # усі об'єкти версії: oid -> поля каталогу
         self.new: list[str] = []               # записані в spool цим захопленням
         self.dirs: set[Path] = set()
@@ -80,7 +83,7 @@ class _Capture:
         self.objs[oid] = {"kind": kind, "stored_len": len(blob), "sha256": sha, "plain_len": plain_len,
                           "codec": codec_id, "new": True}
 
-    def chunk(self, data: bytes, suffix: str, file_size: int, index: int) -> str:
+    def chunk(self, data: bytes, suffix: str, file_size: int, index: int, file_key: str | None = None) -> str:
         oid = self.box.object_id(KIND_CHUNK, data)
         if oid in self.objs:
             return oid
@@ -92,17 +95,25 @@ class _Capture:
             return oid                                      # дедуплікація: блок уже стійко збережено
         ctx = CompressionContext(self.op_id, self.version_id, suffix, file_size, index, len(data), data[:16],
                                  sample_entropy(data), self.codec, self.level)
-        rec, fell_back = self.advisor.recommend(ctx)
-        t0 = time.perf_counter_ns()
-        codec_id, payload = codecs.encode_best(data, codecs.BY_NAME[rec.codec].id, rec.level)
-        encode_ns = time.perf_counter_ns() - t0
+        rec, fell_back, handle = self.learn.decide(ctx, data, oid, file_key)
+        t0, c0 = time.perf_counter_ns(), time.thread_time_ns()
+        codec_id, payload = codecs.encode_best(data, codecs.BY_NAME[rec.codec].id, rec.level)  # невигідне -> Store
+        encode_ns, cpu_ns = time.perf_counter_ns() - t0, time.thread_time_ns() - c0
         self.put(KIND_CHUNK, oid, codec_id, len(data), payload)
+        self.learn.outcome(handle, codec_used=codecs.get(codec_id).name, payload_len=len(payload),
+                           stored_len=self.objs[oid]["stored_len"], raw_len=len(data), wall_ns=encode_ns, cpu_ns=cpu_ns)
         self.advisor.observe(CompressionOutcome(
             self.op_id, self.version_id, oid, suffix, index, rec.codec, codecs.get(codec_id).name, len(data),
             self.objs[oid]["stored_len"], encode_ns, fell_back))
+        self.learn.probe(handle, data)
         return oid
 
-    def read_file(self, path: Path) -> tuple[bytes, int, list[str], os.stat_result]:
+    def file_key(self, root: str, rel: str) -> str | None:
+        """Знеособлений ключ лінії вже відомого файла (до читання); новий файл — None."""
+        row = self.cat.one("SELECT file_id FROM files WHERE root=? AND path=?", (root, rel))
+        return group_key(self.repo.cfg["repo_id"], row[0]) if row else None
+
+    def read_file(self, path: Path, file_key: str | None = None) -> tuple[bytes, int, list[str], os.stat_result]:
         """(sha256, розмір, блоки по порядку, stat) або _Changed, якщо файл змінився під час читання."""
         suffix = path.suffix[1:].lower()
         h, size, chunks = hashlib.sha256(), 0, []
@@ -110,7 +121,7 @@ class _Capture:
             before = os.fstat(f.fileno())
             while data := f.read(self.chunk_size):
                 h.update(data)
-                chunks.append(self.chunk(data, suffix, before.st_size, len(chunks)))
+                chunks.append(self.chunk(data, suffix, before.st_size, len(chunks), file_key))
                 size += len(data)
                 self.heartbeat()
             after = os.fstat(f.fileno())
@@ -175,6 +186,18 @@ def _precheck(repo: Repo, priority: int) -> tuple[int, int]:
     return pol["min_copies"], target
 
 
+def _finish_learning(cat, cap: _Capture, version_id: str, *, published: bool) -> None:
+    """Журнал навчання пишеться ПІСЛЯ публікації версії й поза її транзакцією: збій журналу
+    не змінює ні стану версії, ні черги."""
+    try:
+        summary = cap.learn.finish(published)
+        if cap.learn.errors:
+            cat.event("learning_errors", cap.learn.errors, getattr(cap.learn, "note", version_id))
+        cat.event("learning", None, json.dumps({"version_id": version_id, **summary}, ensure_ascii=False)[:2000])
+    except Exception:
+        pass
+
+
 def backup(repo: Repo, source: Path, *, name: str | None = None, priority: int = 1,
            op_id: str | None = None) -> tuple[str, bool]:
     """Приймає версію локально. Повертає (version_id, чи це повтор уже прийнятої операції)."""
@@ -217,9 +240,10 @@ def backup(repo: Repo, source: Path, *, name: str | None = None, priority: int =
                                 "mode": stat_mod.S_IMODE(st.st_mode)})
             else:
                 result, reason = None, ""
+                pre_key = cap.file_key(str(root), rel)
                 for _ in range(READ_RETRIES):
                     try:
-                        result = cap.read_file(path)
+                        result = cap.read_file(path, pre_key)
                         break
                     except _Changed:
                         reason = "changed_during_read"
@@ -232,8 +256,9 @@ def backup(repo: Repo, source: Path, *, name: str | None = None, priority: int =
                 digest, size, chunks, st = result
                 cid = box.content_id(digest)
                 contents.setdefault(cid, {"size": size, "sha256": digest.hex(), "chunks": chunks})
-                entries.append({"path": rel, "type": "file", "content_id": cid, "size": size,
-                                "file_id": _file_id(cat, str(root), rel, st, root, pending_files),
+                fid = _file_id(cat, str(root), rel, st, root, pending_files)
+                cap.learn.file_done(pre_key, fid, cid)
+                entries.append({"path": rel, "type": "file", "content_id": cid, "size": size, "file_id": fid,
                                 "mtime_ns": st.st_mtime_ns, "mode": stat_mod.S_IMODE(st.st_mode)})
                 total += size
         used = {oid for c in contents.values() for oid in c["chunks"]}
@@ -284,7 +309,9 @@ def backup(repo: Repo, source: Path, *, name: str | None = None, priority: int =
                 repo.spool_path(oid).unlink(missing_ok=True)
         text = e.message if isinstance(e, VaultError) else type(e).__name__
         cat.set_state(version_id, VersionState.FAILED, error=text[:300])
+        _finish_learning(cat, cap, version_id, published=False)
         raise
     cat.checkpoint()
+    _finish_learning(cat, cap, version_id, published=True)
     crashpoint("capture.after_publish")
     return version_id, False
