@@ -23,6 +23,16 @@ def env(tmp_path):
     e.stop_node()
 
 
+def test_run_once_makes_one_attempt_per_job(env, tmp_path):
+    """--once (і кожен прохід служби): повтор, запланований у цьому ж проході, чекає наступного."""
+    env.setup(start=False)                                   # вузол «лежить»; backoff 0.05 с
+    env.ok("backup", make_tree(tmp_path))
+    code, out = env.cli("run", "--once")
+    assert code == 3 and out["queue"]["attention"] == 0
+    assert env.sql("SELECT MAX(attempts), COUNT(*) FROM jobs WHERE backend='node'")[0][0] == 1
+    assert env.sql("SELECT COUNT(*) FROM jobs WHERE state='ATTENTION'") == [(0,)]
+
+
 def test_emergency_restore_without_installation(env, tmp_path):
     """Автономний скрипт: без пакета log3 (python -I, порожній каталог), без config.json і catalog.sqlite."""
     env.setup(node=False, min_copies=1)

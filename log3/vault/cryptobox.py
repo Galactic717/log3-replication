@@ -63,9 +63,25 @@ def read_secret(env: str, *, prompt: str | None = None) -> bytes:
             raise VaultError("E_KEY_PERMS", f"файл секрету {env}_FILE доступний іншим користувачам; chmod 600",
                              Exit.KEY)
         return path.read_bytes().strip(b"\r\n")
-    if prompt and sys.stdin.isatty():
+    if prompt and _interactive():
         return getpass.getpass(prompt).encode("utf-8")
     raise VaultError("E_KEY", f"секрет не задано: встановіть змінну {env} або {env}_FILE", Exit.KEY)
+
+
+def _interactive() -> bool:
+    """Чи є справжня консоль для запиту фрази. У Windows NUL (stdin служби чи перенаправлення) теж
+    «tty», а getpass читає консоль напряму й зависав би — тому перевіряється GetConsoleMode."""
+    if sys.stdin is None or not sys.stdin.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    import ctypes
+    import msvcrt
+    try:
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(ctypes.c_ulong())))
+    except OSError:
+        return False
 
 
 class PassphraseKeys(RepoKeys):

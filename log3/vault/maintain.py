@@ -8,7 +8,7 @@ from . import manifest
 from .backends.base import Backend
 from .catalog import now_ns
 from .cryptobox import KIND_CHUNK, KIND_MANIFEST, read_secret
-from .errors import BackendError, Exit, VaultError
+from .errors import BackendError, Exit, VaultError, crashpoint
 from .fsutil import free_bytes, sha256_file
 from .keys import sign_meta
 from .replicate import CONFIG_META, LIVE, ensure_jobs, pointer_name, protection, refresh_version, run_queue
@@ -108,6 +108,7 @@ def repair(repo: Repo, *, all_backends: bool = False, run: bool = True, timeout:
             out["requeued"] += ensure_jobs(repo, v["version_id"], backends, v["priority"])
             if v["state"] in ("DEGRADED", "PROTECTED"):
                 cat.set_state(v["version_id"], VersionState.REPLICATING)
+    crashpoint("repair.after_requeue")
     if run:
         out["queue"] = run_queue(repo, deadline_ns=None if timeout is None else now_ns() + int(timeout * 1e9))
     _refresh_all(repo)
@@ -136,6 +137,7 @@ def gc(repo: Repo, *, apply: bool = False) -> dict:
             for vid in doomed:
                 cat.set_state(vid, VersionState.DELETED)
                 cat.x("DELETE FROM version_objects WHERE version_id=?", (vid,))
+        crashpoint("gc.after_mark_deleted")
     refs = "" if apply else f"AND version_id NOT IN ({','.join('?' * len(doomed))})"
     orphans = cat.q("SELECT oid, stored_len FROM objects o WHERE NOT EXISTS(SELECT 1 FROM version_objects vo "
                     f"WHERE vo.oid=o.oid {refs}) AND NOT EXISTS(SELECT 1 FROM jobs j WHERE j.oid=o.oid "

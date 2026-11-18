@@ -152,8 +152,11 @@ def _execute(w: _Work) -> str | None:
         w.tmp.unlink(missing_ok=True)
 
 
-def _lease(repo: Repo) -> list:
+def _lease(repo: Repo, cutoff_ns: int | None = None) -> list:
+    """Бере в роботу завдання, час яких настав. cutoff_ns (прохід без очікування) — лише ті, що були
+    готові на початку проходу: повтор, запланований у цьому ж проході, чекає наступного."""
     cat, now, rows = repo.cat, now_ns(), []
+    due = now if cutoff_ns is None else min(now, cutoff_ns)
     with cat.tx():
         recovered = cat.x("UPDATE jobs SET state='PENDING', lease_until_ns=NULL WHERE state='RUNNING' "
                           "AND lease_until_ns<?", (now,))
@@ -162,7 +165,7 @@ def _lease(repo: Repo) -> list:
         for prio, share in WEIGHTS:
             rows += cat.q("SELECT j.*, o.kind, o.stored_len, o.sha256, o.in_spool FROM jobs j JOIN objects o "
                           "ON o.oid=j.oid WHERE j.state='PENDING' AND j.priority=? AND j.next_at_ns<=? "
-                          "ORDER BY j.enq_ns, j.job_id LIMIT ?", (prio, now, share * BATCH_UNIT))
+                          "ORDER BY j.enq_ns, j.job_id LIMIT ?", (prio, due, share * BATCH_UNIT))
         lease = now + int(repo.limits["lease_seconds"] * 1e9)
         for r in rows:
             cat.x("UPDATE jobs SET state='RUNNING', lease_until_ns=? WHERE job_id=?", (lease, r["job_id"]))
@@ -240,12 +243,13 @@ def run_queue(repo: Repo, *, wait: bool = True, deadline_ns: int | None = None,
     """Обробляє чергу. wait=False — лише завдання, час яких настав; wait=True — чекає повторів,
     доки черга не спорожніє, не вийде deadline або until_version не дійде до PROTECTED/DEGRADED."""
     cat, total = repo.cat, {"done": 0, "retry": 0, "attention": 0}
+    cutoff = None if wait else now_ns()                    # --once і служба: одна спроба на завдання за прохід
     with ThreadPoolExecutor(max_workers=repo.limits["max_parallel"]) as pool:
         while True:
             if until_version and cat.scalar("SELECT state FROM versions WHERE version_id=?",
                                             (until_version,)) in ("PROTECTED", "DEGRADED"):
                 break
-            rows = _lease(repo)
+            rows = _lease(repo, cutoff)
             if not rows:
                 nxt = cat.scalar("SELECT MIN(COALESCE(lease_until_ns, next_at_ns)) FROM jobs "
                                  "WHERE state IN ('PENDING','RUNNING')")

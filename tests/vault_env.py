@@ -66,6 +66,8 @@ class Env:
 
     def stop_node(self) -> None:
         if self.node is not None:
+            if os.name == "nt":                         # python із venv у Windows — лаунчер із дочірнім процесом
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(self.node.pid)], capture_output=True)
             self.node.kill()
             self.node.wait()
             self.node = None

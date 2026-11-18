@@ -81,6 +81,8 @@ class _Capture:
         _, sha = write_durable(dest, [blob], tmp_dir=self.repo.spool / "tmp", sync_dir=False)
         self.dirs.add(dest.parent)
         self.spool_bytes += len(blob)
+        if len(self.new) == 1:
+            crashpoint("capture.after_first_chunk")          # блок у spool, маніфесту й каталогу ще нема
         self.objs[oid] = {"kind": kind, "stored_len": len(blob), "sha256": sha, "plain_len": plain_len,
                           "codec": codec_id, "new": True}
 
