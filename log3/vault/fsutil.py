@@ -109,15 +109,18 @@ def access_report(path: Path) -> dict:
         mode = os.stat(path).st_mode & 0o777
         return {"mode": oct(mode), "others_have_access": bool(mode & 0o077)}
     # правила одразу як SID: перекладати імена не треба (у CI-раннерах і доменах переклад падає)
-    ps = ("$a=Get-Acl -LiteralPath $env:L3P; $u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
-          "$r=$a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]);"
-          "@{user=$u; inherited=[bool]($r|?{$_.IsInherited}); sids=@($r|%{$_.IdentityReference.Value})}"
-          "|ConvertTo-Json -Compress")
+    ps = ("try{$a=[IO.Directory]::GetAccessControl($env:L3P);"
+          "$u=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;"
+          "$r=@($a.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));"
+          "@{user=$u; inherited=[bool]($r|?{$_.IsInherited}); sids=@($r|%{[string]$_.IdentityReference.Value})}"
+          "|ConvertTo-Json -Compress}catch{@{error=[string]$_.Exception.Message}|ConvertTo-Json -Compress}")
     try:
         r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
                            text=True, env={**os.environ, "L3P": str(path)}, timeout=60)
         d = json.loads(r.stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        return {"acl": "unknown", "others_have_access": None}
+        d = {"error": "powershell недоступний або повернув не JSON"}
+    if "error" in d or not d.get("sids") or None in d["sids"]:     # не змогли прочитати — «невідомо», не «так/ні»
+        return {"acl": "unknown", "error": str(d.get("error", "порожній ACL"))[:200], "others_have_access": None}
     others = sorted(set(d["sids"]) - {d["user"], "S-1-5-18", "S-1-5-32-544"})
     return {"acl_inherited": d["inherited"], "other_sids": others, "others_have_access": bool(others) or d["inherited"]}
