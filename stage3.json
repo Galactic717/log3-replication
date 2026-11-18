@@ -1,0 +1,325 @@
+{
+ "stage": 3,
+ "title": "LOG3 Vault: встановлюваний продукт, гарантії, матриця відмов, автоматичний захист",
+ "date": "2026-11-18",
+ "status": "complete",
+ "package": "log3 3.0.0",
+ "entry_points": {
+  "log3-vault": "log3.vault.cli:main",
+  "log3-defense": "log3.defense.__main__:main",
+  "emergency_restore": "log3_restore.py (log3/vault/standalone_restore.py)"
+ },
+ "docs": [
+  "docs/GUARANTEES.md",
+  "docs/SECURITY.md",
+  "docs/OPERATIONS.md",
+  "docs/DEFENSE.md",
+  "docs/DEPENDENCIES.md"
+ ],
+ "levels": {
+  "accepted_local": "одна транзакція SQLite synchronous=FULL після fsync блоків і маніфесту; копій нема",
+  "replica_confirmed": "ack backend-а з oid, довжиною й SHA-256 збережених байтів після fsync; надсилання станом не є",
+  "protected": "кожен блок і маніфест мають CONFIRMED-копії в >= min_copies різних доменах відмов"
+ },
+ "new_commands": [
+  "doctor",
+  "config check|show",
+  "queue",
+  "find",
+  "drill",
+  "health",
+  "metrics --format prometheus",
+  "migrate status|restore",
+  "key status|rotate|passphrase|export|publish",
+  "node-token add|revoke|list",
+  "emergency-kit",
+  "run --daemon",
+  "recover --accept-legacy-meta"
+ ],
+ "keys": {
+  "hierarchy": "scrypt -> KEK -> загорнуті ключі даних і ключ ідентифікаторів; HKDF ключ службових файлів",
+  "rotation": "новий активний ключ; старі лишаються для читання",
+  "passphrase_change": "перезагортання",
+  "export": "усі ключі під окремою фразою",
+  "nonce": "випадкові 96 біт; <= 2^30 об'єктів на ключ, автоматична ротація",
+  "metadata_authenticity": "HMAC repo-config.json і покажчиків версій, прив'язаний до назви файла"
+ },
+ "node": {
+  "roles": {
+   "reader": "GET/stat/info",
+   "writer": "+PUT",
+   "admin": "+DELETE"
+  },
+  "revocation": "tokens-file перечитується за mtime",
+  "limits": [
+   "max_object_bytes",
+   "max_meta_bytes 1 МіБ",
+   "Content-Length",
+   "квота",
+   "max_connections",
+   "429 після 10 невдалих автентифікацій"
+  ],
+  "peer_verification": "клієнт: закріплений сертифікат і ім'я; вузол: токен (mTLS нема)"
+ },
+ "local_access": "без ролей у CLI; каталог сховища лише власнику (POSIX 0700, Windows ACL)",
+ "catalog_schema": {
+  "version": 2,
+  "migration": "автоматична, копія в backups/, одна транзакція"
+ },
+ "failure_matrix": [
+  {
+   "id": "crash-after-accept",
+   "failure": "зупинка після приймання, але до реплікації",
+   "status": "passed"
+  },
+  {
+   "id": "lost-response",
+   "failure": "запис завершився, відповідь загубилась",
+   "status": "passed"
+  },
+  {
+   "id": "crash-block-manifest-catalog",
+   "failure": "аварія між блоком, маніфестом і каталогом",
+   "status": "passed"
+  },
+  {
+   "id": "node-outage",
+   "failure": "тривала недоступність вузла",
+   "status": "passed"
+  },
+  {
+   "id": "disk-full",
+   "failure": "заповнення локального й віддаленого диска",
+   "status": "passed"
+  },
+  {
+   "id": "corruption",
+   "failure": "пошкодження копії та маніфесту",
+   "status": "passed"
+  },
+  {
+   "id": "catalog-loss",
+   "failure": "втрата основного каталогу",
+   "status": "passed"
+  },
+  {
+   "id": "restart-repair-gc",
+   "failure": "перезапуск при незавершеному repair/GC",
+   "status": "passed"
+  },
+  {
+   "id": "wrong-key",
+   "failure": "неправильний або недоступний ключ і токен",
+   "status": "passed"
+  }
+ ],
+ "product_bench": {
+  "machine": "12th Gen Intel(R) Core(TM) i7-12700H | 20 CPU | Windows",
+  "targets_met": true,
+  "measurements": {
+   "restore_identical_fraction": 1.0,
+   "policy_satisfied_fraction": 1.0,
+   "backup_accept_mib_s": 17.16,
+   "restore_mib_s": 10.25,
+   "time_to_protected_seconds": 6.9293623,
+   "peak_rss_mib": 73.9,
+   "stored_to_plain_per_copy": 0.5367,
+   "recover_catalog_seconds": 0.861,
+   "adaptation_cpu_overhead": 0.1722
+  }
+ },
+ "defense_run": {
+  "profile": "full",
+  "commit": "53cb4b9",
+  "materials_present": true,
+  "totals": {
+   "stages": 22,
+   "stages_passed": 22,
+   "stages_failed": 0,
+   "stages_skipped": 0,
+   "steps": 283,
+   "steps_failed": 0
+  },
+  "stages": [
+   {
+    "stage": "env",
+    "kind": "середовище",
+    "status": "passed",
+    "steps": 3,
+    "steps_failed": 0
+   },
+   {
+    "stage": "pipeline",
+    "kind": "новий експеримент",
+    "status": "passed",
+    "steps": 2,
+    "steps_failed": 0
+   },
+   {
+    "stage": "huffman",
+    "kind": "новий експеримент + перегляд збережених",
+    "status": "passed",
+    "steps": 4,
+    "steps_failed": 0
+   },
+   {
+    "stage": "classifier",
+    "kind": "перегляд збережених / новий експеримент",
+    "status": "passed",
+    "steps": 4,
+    "steps_failed": 0
+   },
+   {
+    "stage": "ga",
+    "kind": "перегляд збережених / новий експеримент",
+    "status": "passed",
+    "steps": 4,
+    "steps_failed": 0
+   },
+   {
+    "stage": "attack",
+    "kind": "новий експеримент",
+    "status": "passed",
+    "steps": 3,
+    "steps_failed": 0
+   },
+   {
+    "stage": "vault-mixed",
+    "kind": "продукт",
+    "status": "passed",
+    "steps": 12,
+    "steps_failed": 0
+   },
+   {
+    "stage": "showcase",
+    "kind": "продукт",
+    "status": "passed",
+    "steps": 18,
+    "steps_failed": 0
+   },
+   {
+    "stage": "node-repair",
+    "kind": "продукт",
+    "status": "passed",
+    "steps": 17,
+    "steps_failed": 0
+   },
+   {
+    "stage": "learning",
+    "kind": "продукт",
+    "status": "passed",
+    "steps": 24,
+    "steps_failed": 0
+   },
+   {
+    "stage": "keys",
+    "kind": "продукт",
+    "status": "passed",
+    "steps": 13,
+    "steps_failed": 0
+   },
+   {
+    "stage": "update",
+    "kind": "продукт (стара версія з git)",
+    "status": "passed",
+    "steps": 11,
+    "steps_failed": 0
+   },
+   {
+    "stage": "install",
+    "kind": "продукт (реліз)",
+    "status": "passed",
+    "steps": 14,
+    "steps_failed": 0,
+    "rerun_after_fix": "ac33b86"
+   },
+   {
+    "stage": "matrix:crash-after-accept",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 13,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:lost-response",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 12,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:crash-block-manifest-catalog",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 21,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:node-outage",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 16,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:disk-full",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 20,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:corruption",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 17,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:catalog-loss",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 14,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:restart-repair-gc",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 21,
+    "steps_failed": 0
+   },
+   {
+    "stage": "matrix:wrong-key",
+    "kind": "матриця відмов (продукт)",
+    "status": "passed",
+    "steps": 20,
+    "steps_failed": 0
+   }
+  ],
+  "environment": {
+   "python": "3.11.9",
+   "os": "Windows-10-10.0.26300-SP0",
+   "machine": "AMD64",
+   "processor": "Intel64 Family 6 Model 154 Stepping 3, GenuineIntel",
+   "cpu_count": 20
+  }
+ },
+ "ci": [
+  "ruff",
+  "pytest Linux 3.11-3.13",
+  "pytest Windows 3.11 (файловий режим)",
+  "commit-size <= 1000 текстових рядків на коміт",
+  "defense: dry-run + частина матриці",
+  "release: тег v* -> артефакти з SHA256SUMS"
+ ],
+ "limitations": [
+  "втрату живлення фізично не перевірено",
+  "процеси демонстрації на одному диску",
+  "версії до protected гинуть разом із локальним диском",
+  "mTLS і S3-backend не реалізовано",
+  "ролей у локальному CLI нема",
+  "macOS не перевірялась",
+  "числа продуктивності — для однієї машини й одного диска"
+ ]
+}
