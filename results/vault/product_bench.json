@@ -1,0 +1,106 @@
+{
+ "date": "2026-11-18",
+ "machine": {
+  "cpu": "12th Gen Intel(R) Core(TM) i7-12700H",
+  "logical_cpus": 20,
+  "os": "Windows-10-10.0.26300-SP0",
+  "python": "3.11.9"
+ },
+ "fingerprint": "12th Gen Intel(R) Core(TM) i7-12700H | 20 CPU | Windows",
+ "scale_mib": 96,
+ "measurements": {
+  "plain_bytes": 119960677,
+  "files": 104,
+  "restore_identical_fraction": 1.0,
+  "policy_satisfied_fraction": 1.0,
+  "objects_under_replicated": 0,
+  "verify_ok_fraction": 1.0,
+  "stored_to_plain_per_copy": 0.5367,
+  "backup_accept_seconds": 6.669,
+  "backup_accept_mib_s": 17.16,
+  "replicate_two_copies_seconds": 7.012,
+  "time_to_protected_seconds": 6.9293623,
+  "verify_seconds": 5.553,
+  "restore_seconds": 11.156,
+  "restore_mib_s": 10.25,
+  "drill_ok": true,
+  "recover_catalog_seconds": 0.861,
+  "cpu_seconds": {
+   "backup": 2.2344,
+   "run": 2.75,
+   "restore": 1.875
+  },
+  "peak_rss_mib": 73.9,
+  "adaptation_cpu_overhead": 0.1722,
+  "adaptation_wall_overhead": 0.4794
+ },
+ "targets": [
+  {
+   "metric": "restore_identical_fraction",
+   "value": 1.0,
+   "min": 1.0,
+   "ok": true
+  },
+  {
+   "metric": "policy_satisfied_fraction",
+   "value": 1.0,
+   "min": 1.0,
+   "ok": true
+  },
+  {
+   "metric": "objects_under_replicated",
+   "value": 0,
+   "max": 0,
+   "ok": true
+  },
+  {
+   "metric": "verify_ok_fraction",
+   "value": 1.0,
+   "min": 1.0,
+   "ok": true
+  },
+  {
+   "metric": "backup_accept_mib_s",
+   "value": 17.16,
+   "min": 6.0,
+   "ok": true
+  },
+  {
+   "metric": "restore_mib_s",
+   "value": 10.25,
+   "min": 6.0,
+   "ok": true
+  },
+  {
+   "metric": "time_to_protected_seconds",
+   "value": 6.9293623,
+   "max": 20.0,
+   "ok": true
+  },
+  {
+   "metric": "recover_catalog_seconds",
+   "value": 0.861,
+   "max": 10.0,
+   "ok": true
+  },
+  {
+   "metric": "peak_rss_mib",
+   "value": 73.9,
+   "max": 200.0,
+   "ok": true
+  },
+  {
+   "metric": "stored_to_plain_per_copy",
+   "value": 0.5367,
+   "max": 0.75,
+   "ok": true
+  },
+  {
+   "metric": "adaptation_cpu_overhead",
+   "value": 0.1722,
+   "max": 0.6,
+   "ok": true
+  }
+ ],
+ "note": "Цілі перевірено для цього комп'ютера. Числа описують цей прогін на одному диску й не є універсальною продуктивністю."
+}
