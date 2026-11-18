@@ -378,6 +378,10 @@ def install_stage(ctx: Ctx) -> list[Step]:
         p.write_bytes(p.read_bytes().replace(b"Fail", b"Fa1l", 1))
         return "копія релізу з одним зміненим байтом у log3_restore.py"
 
+    def built(c: Ctx, r: Result) -> str:
+        c.vars["wheel"] = str(next(dist.glob("log3-*.whl")))    # колесо відоме лише після збирання
+        return f"версія {r.data['version']}, файлів {r.data['files']}, колесо {Path(c.vars['wheel']).name}"
+
     def where(c: Ctx, r: Result) -> str:
         path = r.out.strip().splitlines()[-1]
         assert str(venv) in path, path
@@ -385,7 +389,7 @@ def install_stage(ctx: Ctx) -> list[Step]:
     return [
         Step("зібрати релізні артефакти (потрібна мережа для коліс залежностей)",
              [ctx.py, "scripts/build_release.py", "--out", dist], cwd=ctx.root, timeout=1800,
-             check=lambda c, r: f"версія {r.data['version']}, файлів {r.data['files']}"),
+             check=built),
         Step("перевірити SHA256SUMS", [ctx.py, "scripts/build_release.py", "--verify", dist], cwd=ctx.root,
              check=lambda c, r: f"перевірено файлів: {r.data['checked']}"),
         Step("підмінити байт у копії релізу", action=tamper),
@@ -395,7 +399,7 @@ def install_stage(ctx: Ctx) -> list[Step]:
         Step("чисте віртуальне середовище", [ctx.py, "-m", "venv", venv]),
         Step("офлайн-встановлення: --no-index, лише wheelhouse релізу",
              [vpy, "-m", "pip", "install", "--no-index", "--find-links", dist / "wheelhouse",
-              *sorted(str(p) for p in dist.glob("log3-*.whl"))], timeout=1800),
+              V("wheel")], env=clean, timeout=1800),
         Step("пакет береться зі встановлення, а не з каталогу проєкту",
              [vpy, "-c", "import log3.vault, os; print(os.path.dirname(log3.vault.__file__))"], env=clean,
              check=where),

@@ -48,7 +48,10 @@ def build(out: Path, platforms: list[str]) -> dict:
     if out.exists():
         shutil.rmtree(out)
     (out / "wheelhouse").mkdir(parents=True)
+    leftovers = [p for p in (ROOT / "build", ROOT / "log3.egg-info") if not p.exists()]
     run(sys.executable, "-m", "pip", "wheel", ".", "--no-deps", "-w", str(out))   # ізольоване збирання (мережа)
+    for p in leftovers:                      # setuptools лишає build/ і egg-info у робочій копії
+        shutil.rmtree(p, ignore_errors=True)
     commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     run("git", "archive", "--format=tar.gz", f"--prefix=log3-{version}/", "-o", str(out / f"log3-{version}-src.tar.gz"),
         "HEAD")
