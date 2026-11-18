@@ -10,9 +10,21 @@
 Підтвердження PUT надсилається після fsync файла, перейменування, fsync каталогу й фіксації
 обліку квоти. Якщо відповідь загубилась, повтор того самого PUT бачить готовий об'єкт:
 нічого не дописує і квоту вдруге не списує (облік — INSERT OR IGNORE за oid).
+
+Доступ (--tokens-file, команда node-token): у файлі лише SHA-256 токенів, назви й ролі.
+  reader  GET/stat/info/meta-list           — перевірка й restore
+  writer  + PUT об'єктів і службових файлів  — реплікація й repair
+  admin   + DELETE                          — gc
+Writer не може видаляти, але може записати під тим самим oid інші байти (так repair замінює
+пошкоджену копію); клієнт це виявляє verify і відновлює з іншої копії. Файл перечитується за
+зміною mtime, тому відкликання (revoked) діє з наступного запиту без перезапуску вузла.
+Без --tokens-file діє один токен зі змінної LOG3_NODE_TOKEN з роллю admin (сумісність етапу 1).
+Ліміти: розмір об'єкта й службового файла, одночасні з'єднання, квота, блокування IP після
+серії невдалих автентифікацій (429).
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -20,6 +32,7 @@ import os
 import sqlite3
 import ssl
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -61,18 +74,95 @@ class Ledger:
             self.db.execute("DELETE FROM charges WHERE oid=?", (oid,))
 
 
+ROLES = {"reader": 0, "writer": 1, "admin": 2}
+NEED = {("GET", "info"): "reader", ("GET", "objects"): "reader", ("GET", "stat"): "reader",
+        ("GET", "meta"): "reader", ("PUT", "objects"): "writer", ("PUT", "meta"): "writer",
+        ("DELETE", "objects"): "admin", ("DELETE", "meta"): "admin"}
+LIMITS = {"max_object_bytes": 256 << 20, "max_meta_bytes": 1 << 20, "max_connections": 32,
+          "auth_fail_limit": 10, "auth_fail_window_seconds": 60.0, "auth_block_seconds": 60.0}
+TOKENS_FORMAT = "log3-node-tokens"
+
+
+def token_hash(token: bytes) -> str:
+    return hashlib.sha256(token).hexdigest()
+
+
+class Tokens:
+    """Токени вузла: файл (ролі, відкликання) або один токен зі змінної середовища (admin)."""
+
+    def __init__(self, path: Path | None, env_token: bytes | None):
+        self.path, self.mtime, self.lock = path, None, threading.Lock()
+        self.entries = [] if path else [{"name": "env", "sha256": token_hash(env_token or b""), "role": "admin"}]
+        if path:
+            self._reload()
+
+    def _reload(self) -> None:
+        mtime = self.path.stat().st_mtime_ns
+        if mtime != self.mtime:
+            doc = json.loads(self.path.read_text(encoding="utf-8"))
+            if doc.get("format") != TOKENS_FORMAT:
+                raise BackendError("файл токенів має невідомий формат")
+            self.entries = [t for t in doc["tokens"] if not t.get("revoked") and t.get("role") in ROLES]
+            self.mtime = mtime
+
+    def check(self, token: bytes) -> dict | None:
+        """Запис токена або None. Дайджести порівнюються за сталий час з усіма записами."""
+        with self.lock:
+            if self.path:
+                self._reload()
+            got, hit = token_hash(token), None
+            for t in self.entries:
+                if hmac.compare_digest(got, t["sha256"]) and token:
+                    hit = t
+            return hit
+
+
 class NodeServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr, data: Path, token: bytes, tls: ssl.SSLContext, quota_bytes: int = 0):
+    def __init__(self, addr, data: Path, token: bytes | None, tls: ssl.SSLContext, quota_bytes: int = 0, *,
+                 tokens_file: Path | None = None, limits: dict | None = None):
         super().__init__(addr, _Handler)
-        self.store, self.token, self.tls, self.quota = ObjectDir(data), token, tls, quota_bytes
+        self.store, self.tls, self.quota = ObjectDir(data), tls, quota_bytes
+        self.tokens = Tokens(tokens_file, token)
+        self.limits = {**LIMITS, **(limits or {})}
+        self.slots = threading.BoundedSemaphore(self.limits["max_connections"])
+        self.failures: dict[str, list[float]] = {}
+        self.fail_lock = threading.Lock()
         self.store.create()
         self.ledger = Ledger(data / "node-ledger.sqlite")
 
     def get_request(self):
         sock, addr = self.socket.accept()
         return self.tls.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), addr
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):          # межа одночасних з'єднань
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+    def blocked(self, ip: str) -> bool:
+        lim, now = self.limits, time.monotonic()
+        with self.fail_lock:
+            recent = [t for t in self.failures.get(ip, []) if now - t < lim["auth_block_seconds"]
+                      + lim["auth_fail_window_seconds"]]
+            self.failures[ip] = recent
+            return sum(now - t < lim["auth_fail_window_seconds"] for t in recent) >= lim["auth_fail_limit"]
+
+    def auth_failed(self, ip: str) -> None:
+        with self.fail_lock:
+            self.failures.setdefault(ip, []).append(time.monotonic())
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -86,7 +176,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):                         # заголовки (і токен) у журнал не потрапляють
         if os.environ.get("LOG3_NODE_QUIET") != "1":
-            super().log_message(fmt, *args)
+            super().log_message("%s " + fmt, getattr(self, "token_name", "-"), *args)
 
     def _json(self, status: int, obj) -> None:
         body = json.dumps(obj).encode()
@@ -106,18 +196,32 @@ class _Handler(BaseHTTPRequestHandler):
             yield block
 
     def _route(self, method: str) -> None:
-        srv = self.server
-        got = self.headers.get("Authorization", "").removeprefix("Bearer ").encode()
-        length = int(self.headers.get("Content-Length") or 0)
-        if not hmac.compare_digest(got, srv.token):
+        srv, ip = self.server, self.client_address[0]
+        if srv.blocked(ip):
+            self.close_connection = True
+            return self._json(429, {"error": "too many failed authentications"})
+        entry = srv.tokens.check(self.headers.get("Authorization", "").removeprefix("Bearer ").encode())
+        if entry is None:
+            srv.auth_failed(ip)
             self.close_connection = True
             return self._json(401, {"error": "unauthorized"})
+        self.token_name = entry["name"]
         url = urlsplit(self.path)
         parts = url.path.strip("/").split("/")
         try:
-            if parts[:1] != ["v1"] or len(parts) > 3:
+            if parts[:1] != ["v1"] or not 2 <= len(parts) <= 3:
                 return self._json(404, {"error": "not found"})
             kind, arg = parts[1], parts[2] if len(parts) == 3 else ""
+            need = NEED.get((method, kind))
+            if need is None:
+                return self._json(405, {"error": "method not allowed"})
+            if ROLES[entry["role"]] < ROLES[need]:
+                return self._json(403, {"error": f"role {entry['role']} may not {method} {kind}"})
+            length = int(self.headers.get("Content-Length") or -1) if method == "PUT" else 0
+            cap = srv.limits["max_object_bytes" if kind == "objects" else "max_meta_bytes"]
+            if method == "PUT" and not 0 <= length <= cap:
+                self.close_connection = True
+                return self._json(413 if length > cap else 411, {"error": f"Content-Length must be 0..{cap}"})
             if kind == "info" and method == "GET":
                 return self._json(200, {"durability": DURABILITY, "quota_bytes": srv.quota,
                                         "used_bytes": srv.ledger.used()})
@@ -160,7 +264,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
                 return None
             return self._json(405, {"error": "method not allowed"})
-        except BackendError as e:
+        except (BackendError, ValueError) as e:
             self.close_connection = True
             return self._json(400, {"error": str(e)})
 
