@@ -321,12 +321,16 @@ class _Handler(BaseHTTPRequestHandler):
         except QuotaExceeded:
             self.close_connection = True
             return self._json(507, {"error": "quota exceeded"})
-        flag = srv.store.root / "fault-fired"
-        if os.environ.get(FAULT_ENV) == "node_drop_response_once" and not flag.exists():
-            flag.write_text("1")                               # тест: запис стійкий, відповідь загублено
-            self.close_connection = True
-            self.connection.close()
-            return None
+        if os.environ.get(FAULT_ENV) == "node_drop_response_once":
+            flag = srv.store.root / "fault-fired"
+            try:
+                flag.touch(exist_ok=False)
+            except FileExistsError:
+                pass
+            else:
+                self.close_connection = True                  # лише перший запис губить відповідь
+                self.connection.close()
+                return None
         return self._json(200, {"oid": oid, "length": length, "sha256": sha, "durability": DURABILITY,
                                 "duplicate": duplicate})
 
