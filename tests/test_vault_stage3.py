@@ -7,6 +7,8 @@ import json
 import os
 import sqlite3
 import ssl
+import subprocess
+import sys
 
 import pytest
 
@@ -19,6 +21,33 @@ def env(tmp_path):
     e = Env(tmp_path)
     yield e
     e.stop_node()
+
+
+def test_emergency_restore_without_installation(env, tmp_path):
+    """Автономний скрипт: без пакета log3 (python -I, порожній каталог), без config.json і catalog.sqlite."""
+    env.setup(node=False, min_copies=1)
+    src = make_tree(tmp_path)
+    env.ok("backup", src, "--wait")
+    env.ok("key", "rotate")
+    (src / "після ротації.txt").write_text("нові дані", encoding="utf-8")
+    env.ok("backup", src, "--wait")
+    kit = tmp_path / "kit"
+    env.ok("emergency-kit", "--out", kit)
+    env.ok("key", "export", "--out", kit / "keys.export", env={"LOG3_VAULT_EXPORT_PASSPHRASE": "фраза експорту 7"})
+    clean = {k: v for k, v in os.environ.items() if not k.startswith(("LOG3_", "PYTHONPATH"))}
+    for name, extra, args in (("pass", {"LOG3_VAULT_PASSPHRASE": PASSPHRASE}, []),
+                              ("export", {"LOG3_VAULT_EXPORT_PASSPHRASE": "фраза експорту 7"},
+                               ["--key-export", str(kit / "keys.export")])):
+        argv = [sys.executable, "-I", str(kit / "log3_restore.py"), "--backend", str(env.disk), *args,
+                "restore", "latest", str(tmp_path / f"out-{name}")]
+        p = subprocess.run(argv, cwd=kit, env={**clean, **extra}, capture_output=True, text=True, encoding="utf-8",
+                           stdin=subprocess.DEVNULL, timeout=300)
+        assert p.returncode == 0, p.stdout + p.stderr
+        assert tree(tmp_path / f"out-{name}") == tree(src)
+    p = subprocess.run([sys.executable, "-I", str(kit / "log3_restore.py"), "--backend", str(env.disk), "list"],
+                       cwd=kit, env={**clean, "LOG3_VAULT_PASSPHRASE": "wrong passphrase 123"}, capture_output=True,
+                       text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=300)
+    assert p.returncode == 7 and "фраза" in p.stdout
 
 
 def _restore_equal(env, ref, src, dest, **kw):

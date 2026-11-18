@@ -2,7 +2,7 @@
 
   сховище      init, config check|show, backend add|list, doctor, migrate status|restore
   захист       backup, run [--daemon], status, list, find, queue, verify, repair, gc
-  відновлення  restore, drill, recover
+  відновлення  restore, drill, recover, emergency-kit
   ключі        key status|rotate|passphrase|export|publish
   моніторинг   health, metrics [--format prometheus]
   вузол        serve-node, node-cert, node-token add|revoke|list
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import secrets
@@ -128,6 +129,8 @@ def _parser() -> argparse.ArgumentParser:
     backend_args(c, True)
     c.add_argument("--accept-legacy-meta", action="store_true",
                    help="прийняти непідписані службові файли сховища, створеного до етапу 3")
+    c = cmd("emergency-kit", "записати автономний скрипт аварійного restore (без пакета log3 і каталогу)")
+    c.add_argument("--out", required=True)
     c = cmd("key", "ключі: status, rotate, passphrase (LOG3_VAULT_NEW_PASSPHRASE), export, publish")
     c.add_argument("action", choices=("status", "rotate", "passphrase", "export", "publish"))
     c.add_argument("--out", help="export: файл (фраза — LOG3_VAULT_EXPORT_PASSPHRASE)")
@@ -237,6 +240,24 @@ def _node_token(a) -> tuple[Exit, dict]:
                                 for t in doc["tokens"]], "tokens_file": str(path)}
 
 
+def _emergency_kit(out: Path) -> dict:
+    """log3_restore.py (лише stdlib + cryptography + zstandard) і коротка інструкція."""
+    from . import standalone_restore
+    out.mkdir(parents=True, exist_ok=True)
+    script = out / "log3_restore.py"
+    write_durable(script, [Path(standalone_restore.__file__).read_bytes()])
+    readme = "\n".join((
+        "LOG3 Vault: аварійне відновлення без інсталяції", "",
+        "pip install cryptography zstandard   (або офлайн-колеса з релізу)",
+        "LOG3_VAULT_PASSPHRASE=... python log3_restore.py --backend <каталог backend-а> list",
+        "LOG3_VAULT_PASSPHRASE=... python log3_restore.py --backend <каталог> restore latest <куди>",
+        "Без repo-config.json: --key-export keys.export і LOG3_VAULT_EXPORT_PASSPHRASE.",
+        "Вузол: --node-url https://host:port --ca-file node.crt (токен LOG3_NODE_TOKEN).", ""))
+    write_durable(out / "README.txt", [readme.encode("utf-8")])
+    sha = hashlib.sha256(script.read_bytes()).hexdigest()
+    return {"script": str(script), "sha256": sha, "readme": str(out / "README.txt")}
+
+
 def _daemon(a, repo: Repo) -> tuple[Exit, dict]:
     stop = {"flag": False}
 
@@ -287,6 +308,8 @@ def _run(a) -> tuple[Exit, dict]:
         return Exit.OK, {"repo": str(repo.path), "repo_id": cfg["repo_id"], "key_id": repo.cfg["crypto"]["key_id"],
                          "min_copies": a.min_copies,
                          "access": repo.cat.scalar("SELECT value FROM meta WHERE key='access_restriction'")}
+    if cmd == "emergency-kit":
+        return Exit.OK, {"emergency_kit": _emergency_kit(Path(a.out))}
     if cmd == "recover":
         spec = _spec(a)
         if spec["type"] == "localdir":
