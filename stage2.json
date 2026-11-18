@@ -1,0 +1,617 @@
+{
+  "stage": 2,
+  "title": "LOG3 Vault: локальне навчання вибору стиснення, повністю підключене до файлового тракту",
+  "date": "2026-11-18",
+  "status": "complete",
+  "builds_on": "stage1.json",
+  "package": "log3/vault/learn",
+  "entry_point": "python -m log3.vault learn <дія>; навчання також виконується всередині backup і run",
+  "docs": "docs/LEARNING.md",
+  "python": ">=3.11",
+  "dependencies_added": [],
+  "compatibility": {
+    "object_format": "L3FB v1 — без змін",
+    "manifest": "log3-file-manifest v1 — без змін",
+    "codec_ids": "0..2 — без змін",
+    "catalog_schema": "v1 — без змін (журнал навчання — окрема база learn/journal.sqlite)",
+    "exit_codes": "без змін, нових кодів не додано",
+    "config": "log3-vault-config v1; нова необов'язкова секція learning (відсутня = типові значення)",
+    "backends_and_node_api": "без змін",
+    "stage1_tests": "усі проходять без змін очікувань",
+    "restore": "не імпортує й не викликає навчання; копії відновлюються без моделей і журналу",
+    "changed_stage1_files": {
+      "log3/vault/capture.py": "рішення через learn.runtime, CPU кодування, ключ лінії файла, журнал після публікації",
+      "log3/vault/cli.py": "команда learn; крок циклу після run (--no-learn); стадії після backup --wait і verify; пріоритет restore/repair; підсумок навчання в backup і status; необов'язковий імпорт навчання",
+      "log3/vault/repo.py": "new_config додає \"learning\": {\"enabled\": true}"
+    },
+    "changed_v1_files": {
+      "log3/ga/ga.py": "run_ga(decode_fn=...) — необов'язковий декодер; без нього поведінка та сама",
+      "log3/ga/search.py": "validation-seeds замість holdout; рівноправний відбір config / ГА / random search (select_params)",
+      "log3/nn/train.py": "абляція без історії лишає severity; data_sources для кожної частини; заборона прихованого змішування; validation; B008",
+      "log3/nn/data.py": "частина validation (псевдонім valid)",
+      "scripts/reproduce.py": "назви validation"
+    }
+  },
+  "commands": {
+    "status": "python -m log3.vault learn status",
+    "config": "python -m log3.vault learn config [--set ключ=JSON ...]",
+    "collect": "python -m log3.vault learn collect",
+    "train": "python -m log3.vault learn train [--force]",
+    "evaluate": "python -m log3.vault learn evaluate",
+    "promote": "python -m log3.vault learn promote",
+    "rollback": "python -m log3.vault learn rollback [--reason R]",
+    "mode": "python -m log3.vault learn mode baseline|shadow",
+    "pause_resume": "python -m log3.vault learn pause | resume",
+    "disable_enable": "python -m log3.vault learn disable | enable",
+    "freeze_unfreeze": "python -m log3.vault learn freeze --reason R | unfreeze [--accept-window]",
+    "reset": "python -m log3.vault learn reset --yes",
+    "auto": "python -m log3.vault learn auto (той самий крок виконує run; run --no-learn вимикає)",
+    "common_options": [
+      "--repo DIR (або LOG3_VAULT_REPO)",
+      "--json"
+    ],
+    "benchmarks": {
+      "baseline": "python scripts/vault_bench.py baseline --scale-mib 32 --out results/vault/baseline_stage1.json",
+      "adaptive_1mib": "python scripts/vault_bench.py adaptive --scale-mib 96 --rounds 12 --chunk-mib 1 --max-file-kib 2048 --out results/vault/learning_bench_1mib.json --md results/vault/learning_bench_1mib.md",
+      "adaptive_256kib": "python scripts/vault_bench.py adaptive --scale-mib 48 --rounds 12 --chunk-mib 0.25 --max-file-kib 1024 --out results/vault/learning_bench_256kib.json --md results/vault/learning_bench_256kib.md"
+    },
+    "tests": "python -m pytest -q",
+    "lint": "ruff check ."
+  },
+  "exit_codes_used": {
+    "0": "OK",
+    "2": "USAGE (reset без --yes, неправильний mode)",
+    "4": "ATTENTION (пауза, вимкнено, заморожено, кандидат не перевірений)",
+    "5": "CAPACITY (навчання поступилося restore/repair, черзі чи диску)",
+    "6": "POLICY (некоректна секція learning)"
+  },
+  "configuration": {
+    "file": "<repo>/config.json -> learning",
+    "secrets": false,
+    "defaults": {
+      "enabled": true,
+      "actions": [
+        "store:0",
+        "zstd:1",
+        "zstd:3",
+        "zstd:6"
+      ],
+      "cost": {
+        "cpu_second_equiv_bytes": 67108864,
+        "copies": null
+      },
+      "probe": {
+        "rate": 0.05,
+        "max_chunks_per_operation": 64,
+        "max_cpu_seconds_per_operation": 5.0,
+        "max_cpu_fraction": 0.25,
+        "max_queue_fill": 0.5,
+        "min_free_factor": 2.0,
+        "max_load_per_cpu": 1.5
+      },
+      "train": {
+        "max_rows": 20000,
+        "max_seconds": 300.0,
+        "max_memory_mib": 256,
+        "min_interval_seconds": 3600.0,
+        "min_rows": 200,
+        "min_groups": 10,
+        "nice": 10,
+        "kinds": [
+          "costtable",
+          "ridge",
+          "mlp"
+        ],
+        "search_budget": 16,
+        "seed": 0
+      },
+      "gate": {
+        "min_relative_gain": 0.02,
+        "min_shadow_decisions": 100,
+        "max_feature_ns_per_chunk": 3000000,
+        "max_inference_ns_per_chunk": 1000000,
+        "max_protect_latency_increase": 0.25,
+        "bootstrap": 300
+      },
+      "drift": {
+        "psi_freeze": 0.3,
+        "check_every_chunks": 64,
+        "min_chunks": 64,
+        "high_entropy_jump": 0.4,
+        "rewrite_fraction": 0.6
+      },
+      "journal": {
+        "max_decisions": 200000
+      },
+      "auto": {
+        "enabled": true,
+        "promote": true,
+        "max_models": 10
+      }
+    },
+    "notes": [
+      "дія з compression (типово zstd:3) додається до actions автоматично",
+      "cost.copies = null -> policy.min_copies; cost.cpu_second_equiv_bytes = 0 -> ціль «лише простір»"
+    ]
+  },
+  "files": {
+    "learn_dir": "<repo>/learn/",
+    "state": {
+      "path": "<repo>/learn/state.json",
+      "format": "log3-learn-state v1",
+      "fields": [
+        "mode baseline|shadow|active",
+        "paused",
+        "disabled",
+        "frozen",
+        "freeze_reason",
+        "active_model",
+        "candidate_model",
+        "candidate_set_ns",
+        "candidate_eval",
+        "last_good_model",
+        "active_since_ns",
+        "last_train_ns",
+        "history (останні 50 подій)"
+      ],
+      "write": "атомарно: tmp -> fsync -> rename -> fsync каталогу; пошкоджений файл -> baseline + помилка в status"
+    },
+    "journal": {
+      "path": "<repo>/learn/journal.sqlite",
+      "version": 1,
+      "pragmas": [
+        "journal_mode=WAL",
+        "synchronous=NORMAL"
+      ],
+      "tables": {
+        "decisions": "decision_id = uuid5(version_id:object_id), operation_id, version_id, object_id, chunk_index, group_key (hash file_id), decided_ns, feature_schema, features float32[], mask bool[], feature_ns, inference_ns, mode, model_id, policy_action, model_action, chosen_action, shadow_model, shadow_action, fallback, probe_p, quarantine, published",
+        "outcomes": "decision_id, result_ns, action, codec_used, raw_len, payload_len, stored_len, wall_ns, cpu_ns, forced_store",
+        "probes": "decision_id, action, measured_ns, codec_used, payload_len, wall_ns, cpu_ns",
+        "stages": "subject (object_id|version_id), stage, ts_ns, value",
+        "lineage": "group_key, versions_seen, content_changes, last_content (hash), last_seen_ns",
+        "operations": "підсумок backup: chunks, probes, CPU проб/ознак/висновку/кодування, байти, fallback, карантин",
+        "lifecycle": "train, evaluate, promote, rollback, freeze, ... з часом і моделлю",
+        "counters": "duplicate_records, pruned_decisions"
+      },
+      "stages": [
+        "encoded",
+        "queued",
+        "write_confirmed",
+        "policy_satisfied",
+        "read_verified",
+        "verify_failed"
+      ],
+      "not_stages": [
+        "відправлено",
+        "мережевий timeout",
+        "помилка завдання",
+        "відсутність restore"
+      ],
+      "privacy": "без назв, шляхів і байтів файлів; лише класи типів, hash лінії, object_id (HMAC), числові ознаки й витрати",
+      "bounded": "learning.journal.max_decisions; найстаріші рішення видаляються"
+    },
+    "model_artifact": {
+      "path": "<repo>/learn/models/<model_id>/",
+      "files": [
+        "model.json",
+        "arrays.npz"
+      ],
+      "format": "log3-advisor-model v1",
+      "model_json_fields": [
+        "format",
+        "format_version",
+        "model_id",
+        "kind",
+        "feature_schema",
+        "features (порядок, визначення)",
+        "actions",
+        "cost",
+        "params",
+        "status",
+        "created_ns",
+        "config",
+        "provenance (джерело, частини, рядки, групи, часові межі)",
+        "reference (гістограми ознак для PSI)",
+        "metrics (validation, test, gate, overhead)",
+        "arrays {file, sha256, bytes}"
+      ],
+      "kinds": [
+        "fixed",
+        "baseline",
+        "costtable",
+        "ridge",
+        "mlp"
+      ],
+      "loading": "без виконання коду: JSON із перевіркою полів, numpy.load(allow_pickle=False), SHA-256, форми, скінченність, дії ⊆ допустимих, схема ознак = поточній",
+      "retention": "learning.auto.max_models; active, candidate і last_good не видаляються"
+    }
+  },
+  "features": {
+    "schema_id": "log3-chunk-features/1/1aa2cb52446ace3b",
+    "names_in_order": [
+      "log2_chunk_len",
+      "log2_file_size",
+      "chunk_position",
+      "entropy_sample",
+      "entropy_head",
+      "distinct_bytes",
+      "repeat_lag",
+      "zero_bytes",
+      "printable_bytes",
+      "probe_ratio",
+      "probe_log_ns_per_byte",
+      "lineage_known",
+      "lineage_versions",
+      "lineage_change_rate",
+      "queue_fill",
+      "spool_fill",
+      "load_per_cpu",
+      "type_text",
+      "type_structured",
+      "type_code",
+      "type_office_packed",
+      "type_archive",
+      "type_image_packed",
+      "type_media",
+      "type_pdf",
+      "type_executable",
+      "type_database",
+      "type_disk_image",
+      "type_other",
+      "magic_packed",
+      "magic_pdf",
+      "magic_executable",
+      "magic_sqlite",
+      "magic_text",
+      "magic_unknown"
+    ],
+    "definitions": {
+      "log2_chunk_len": "log2(байти блока + 1) / 26",
+      "log2_file_size": "log2(розмір файла + 1) / 40",
+      "chunk_position": "частка файла до початку блока, 0..1",
+      "entropy_sample": "ентропія Шеннона трьох вікон по 4 КіБ, біт/байт / 8",
+      "entropy_head": "ентропія перших 4 КіБ блока (як у базовій політиці) / 8",
+      "distinct_bytes": "частка різних значень байта у вибірці",
+      "repeat_lag": "повторюваність: найбільша частка байтів, що дорівнюють байту на лагах 1/2/4/8, у вибірці",
+      "zero_bytes": "частка нульових байтів у вибірці",
+      "printable_bytes": "частка друкованих ASCII і пробільних байтів у вибірці",
+      "probe_ratio": "виміряна стисливість: zstd-1 на 2 вікнах по 8 КіБ, вихід/вхід",
+      "probe_log_ns_per_byte": "log10 часу пробного стиснення, нс/байт (швидкість машини зараз)",
+      "lineage_known": "1, якщо файл уже бачили в попередніх версіях",
+      "lineage_versions": "log1p(скільки версій бачили) / 5",
+      "lineage_change_rate": "частка попередніх версій, у яких вміст файла змінився",
+      "queue_fill": "заповнення черги реплікації 0..1 на момент рішення",
+      "spool_fill": "заповнення spool 0..1",
+      "load_per_cpu": "середнє навантаження ОС за 1 хв на один CPU, обрізано до 4"
+    },
+    "bounds": "3 вікна по 4 КіБ + пробний zstd-1 на 2 × 8 КіБ незалежно від розміру файла",
+    "availability": "усі ознаки відомі до рішення; недоступні маскуються (lineage для нових файлів, телеметрія)"
+  },
+  "lifecycle": {
+    "cold_start": "без моделі — базова політика; збір рішень, результатів і проб",
+    "train": "часово відокремлені train/validation/test (60/20/20 за часом), лінії файлів не перетинаються; кандидати store, fixed (кодек конфігурації), baseline (фактичні рішення), costtable, ridge, mlp, найкращі ГА і random search (однаковий бюджет); відбір за validation з overhead; gate на test",
+    "gate": [
+      "навчений кандидат",
+      "чистий виграш над базою >= min_relative_gain",
+      "нижня межа групового bootstrap > 0",
+      "overhead ознак і висновку в межах",
+      "у межах max_seconds"
+    ],
+    "shadow": "кандидат пише shadow_action, робочі рішення не змінює (також поруч з активною моделлю)",
+    "evaluate": "свіжі проби після candidate_set_ns: виграш і bootstrap, нуль learning_errors, без карантину, overhead; невдача -> кандидат відхилено, режим baseline",
+    "promote": "лише після пройденого evaluate; попередня активна -> last_good_model",
+    "rollback": "до last_good_model (якщо завантажується) або baseline; автоматично в health",
+    "health": "фактична вартість проти бази на пробах, learning_errors, затримка підтвердження захисту, PSI ознак (-> freeze)",
+    "auto": "після run: collect -> health -> evaluate/promote -> train (не частіше min_interval_seconds)"
+  },
+  "guarantees": [
+    "advisor обирає лише кодек і рівень із допустимого набору; невигідне стиснення тракт замінює Store незалежно від рекомендації",
+    "навчання не видаляє файлів, не змінює retention, кількості копій, прав чи шифрування (перевірено зі «шкідливим» артефактом)",
+    "будь-який збій навчання (конфігурація, стан, модель, журнал, ознаки) -> базова політика і подія learning_errors; backup не зупиняється",
+    "restore не залежить від навчання (перевірено з заблокованим імпортом пакета навчання)",
+    "проби й навчання поступаються restore/repair, повній черзі й нестачі диска; штучних відмов на сховищах замовника не створюють",
+    "мітка — виміряний результат (проба або фактичне кодування), а не прогноз; вибір дії не протікає в ознаки",
+    "дублікати рішень і результатів не перезаписуються й рахуються; рішення без результату не стають прикладами",
+    "масове переписування, стрибок ентропії, PSI, годинник назад -> карантин і заморожування; нормою лише через unfreeze --accept-window"
+  ],
+  "measured": {
+    "environment": {
+      "python": "3.13.18",
+      "platform": "Linux-6.18.44-fc-v553-x86_64-with-glibc2.39",
+      "cpus": 2
+    },
+    "corpus": "синтетичний, scripts/vault_corpus.py (не дані замовника)",
+    "baseline_stage1": {
+      "state_after_run": "PROTECTED",
+      "restore_identical": true,
+      "ratio_stored_to_plain": 0.5473,
+      "time_to_protected_seconds": 2.136808959,
+      "restore_seconds": 0.325
+    },
+    "chunk_1mib": {
+      "off": {
+        "stored_bytes": 347583180,
+        "plain_bytes": 553588699,
+        "stored_to_plain": 0.62787,
+        "backup_cpu_seconds": 7.089,
+        "run_cpu_seconds": 5.676,
+        "backup_wall_seconds": 7.944,
+        "time_to_protected_p50_seconds": 1.543,
+        "time_to_protected_max_seconds": 2.825,
+        "queue_after_backup_max": 328,
+        "restore_latest_seconds": 1.308,
+        "repair_after_10pct_loss_seconds": 0.785,
+        "children_max_rss_kib": 83736
+      },
+      "defaults": {
+        "stored_bytes": 347583180,
+        "plain_bytes": 553588699,
+        "stored_to_plain": 0.62787,
+        "backup_cpu_seconds": 7.961,
+        "run_cpu_seconds": 5.771,
+        "backup_wall_seconds": 8.846,
+        "time_to_protected_p50_seconds": 1.576,
+        "time_to_protected_max_seconds": 2.83,
+        "queue_after_backup_max": 328,
+        "restore_latest_seconds": 1.36,
+        "repair_after_10pct_loss_seconds": 0.794,
+        "children_max_rss_kib": 85572
+      },
+      "accelerated": {
+        "stored_bytes": 347583180,
+        "plain_bytes": 553588699,
+        "stored_to_plain": 0.62787,
+        "backup_cpu_seconds": 11.335,
+        "run_cpu_seconds": 6.381,
+        "backup_wall_seconds": 12.353,
+        "time_to_protected_p50_seconds": 1.629,
+        "time_to_protected_max_seconds": 2.967,
+        "queue_after_backup_max": 328,
+        "restore_latest_seconds": 1.374,
+        "repair_after_10pct_loss_seconds": 0.802,
+        "children_max_rss_kib": 86280
+      },
+      "vs_off": {
+        "defaults": {
+          "stored_bytes_change": 0.0,
+          "backup_cpu_change": 0.123,
+          "run_cpu_change": 0.0167,
+          "time_to_protected_p50_change_seconds": 0.033,
+          "restore_seconds_change": 0.052,
+          "repair_seconds_change": 0.009
+        },
+        "accelerated": {
+          "stored_bytes_change": 0.0,
+          "backup_cpu_change": 0.599,
+          "run_cpu_change": 0.1242,
+          "time_to_protected_p50_change_seconds": 0.086,
+          "restore_seconds_change": 0.066,
+          "repair_seconds_change": 0.017
+        }
+      },
+      "final_selection": {
+        "selected": "ridge (типові параметри)",
+        "gate": {
+          "passed": true,
+          "checks": {
+            "selected_is_learned": true,
+            "net_gain_vs_baseline_on_test": true,
+            "bootstrap_low_above_zero": true,
+            "feature_overhead_within_limit": true,
+            "inference_overhead_within_limit": true,
+            "finished_within_time_limit": true
+          },
+          "gain": 0.020542466923506697,
+          "low": 0.0031365921748517283,
+          "high": 0.0394504865305078,
+          "groups": 54,
+          "min_relative_gain": 0.02
+        },
+        "test_cost_vs_oracle": {
+          "store": 1.5253,
+          "fixed zstd:3": 1.0311,
+          "baseline (фактичні рішення політики)": 1.0446,
+          "costtable (типові параметри)": 1.0245,
+          "ridge (типові параметри)": 1.0231,
+          "mlp (типові параметри)": 1.0262,
+          "ga: ridge": 1.0261,
+          "random: costtable": 1.0287
+        },
+        "test_cost_vs_oracle_without_overhead": {
+          "store": 1.5253,
+          "fixed zstd:3": 1.0311,
+          "baseline (фактичні рішення політики)": 1.0446,
+          "costtable (типові параметри)": 1.0002,
+          "ridge (типові параметри)": 1.0008,
+          "mlp (типові параметри)": 1.0037,
+          "ga: ridge": 1.0012,
+          "random: costtable": 1.0002
+        },
+        "ga_vs_random_validation": {
+          "ga": 1.0002635766633121,
+          "random": 1.0001712396699236,
+          "evaluations_each": 16
+        }
+      },
+      "shadow_check": "ridge-кандидат: офлайн +2.66 % на test, у shadow +0.13 % на 126 пробах -> відхилено",
+      "final_mode": "shadow"
+    },
+    "chunk_256kib": {
+      "off": {
+        "stored_bytes": 137654369,
+        "plain_bytes": 217375069,
+        "stored_to_plain": 0.63326,
+        "backup_cpu_seconds": 5.644,
+        "run_cpu_seconds": 5.87,
+        "backup_wall_seconds": 6.429,
+        "time_to_protected_p50_seconds": 1.681,
+        "time_to_protected_max_seconds": 3.987,
+        "queue_after_backup_max": 478,
+        "restore_latest_seconds": 1.033,
+        "repair_after_10pct_loss_seconds": 0.97,
+        "children_max_rss_kib": 84032
+      },
+      "defaults": {
+        "stored_bytes": 137654369,
+        "plain_bytes": 217375069,
+        "stored_to_plain": 0.63326,
+        "backup_cpu_seconds": 6.185,
+        "run_cpu_seconds": 5.985,
+        "backup_wall_seconds": 6.909,
+        "time_to_protected_p50_seconds": 1.719,
+        "time_to_protected_max_seconds": 4.017,
+        "queue_after_backup_max": 478,
+        "restore_latest_seconds": 1.113,
+        "repair_after_10pct_loss_seconds": 0.97,
+        "children_max_rss_kib": 85816
+      },
+      "accelerated": {
+        "stored_bytes": 137654369,
+        "plain_bytes": 217375069,
+        "stored_to_plain": 0.63326,
+        "backup_cpu_seconds": 7.06,
+        "run_cpu_seconds": 6.1,
+        "backup_wall_seconds": 7.783,
+        "time_to_protected_p50_seconds": 1.637,
+        "time_to_protected_max_seconds": 3.886,
+        "queue_after_backup_max": 478,
+        "restore_latest_seconds": 1.063,
+        "repair_after_10pct_loss_seconds": 1.007,
+        "children_max_rss_kib": 85828
+      },
+      "vs_off": {
+        "defaults": {
+          "stored_bytes_change": 0.0,
+          "backup_cpu_change": 0.0959,
+          "run_cpu_change": 0.0196,
+          "time_to_protected_p50_change_seconds": 0.038,
+          "restore_seconds_change": 0.08,
+          "repair_seconds_change": 0.0
+        },
+        "accelerated": {
+          "stored_bytes_change": 0.0,
+          "backup_cpu_change": 0.2509,
+          "run_cpu_change": 0.0392,
+          "time_to_protected_p50_change_seconds": -0.044,
+          "restore_seconds_change": 0.03,
+          "repair_seconds_change": 0.037
+        }
+      },
+      "final_selection": {
+        "selected": "fixed zstd:3",
+        "gate": {
+          "passed": false,
+          "checks": {
+            "selected_is_learned": false,
+            "net_gain_vs_baseline_on_test": false,
+            "bootstrap_low_above_zero": false,
+            "feature_overhead_within_limit": true,
+            "inference_overhead_within_limit": true,
+            "finished_within_time_limit": true
+          },
+          "gain": 0.0047063116883939715,
+          "low": -0.007211253076397206,
+          "high": 0.01570834975013536,
+          "groups": 45,
+          "min_relative_gain": 0.02
+        }
+      }
+    },
+    "benefit_summary": "користь не доведена на живих даних: база лишається активною; без overhead навчені моделі ~ оракул (валовий виграш ~4 % на блоці 1 МіБ), але ознаки забирають ~2 %",
+    "overhead_defaults": {
+      "feature_us_per_chunk": [
+        162,
+        179
+      ],
+      "probe_cpu_s_per_gib": [
+        0.44,
+        0.46
+      ],
+      "encode_cpu_s_per_gib": [
+        1.37,
+        1.42
+      ],
+      "backup_cpu_increase": [
+        0.0959,
+        0.123
+      ],
+      "training_cpu_seconds_per_run": [
+        0.04,
+        0.08
+      ]
+    },
+    "harm_to_tract": "у межах шуму: затримка підтвердження захисту ±0.1 с, черга однакова, restore/repair ±0.1 с, RSS +2 МіБ"
+  },
+  "verification": {
+    "environment": "Linux x86_64, Python 3.13.18, numpy 2.5.3, cryptography 50.0.1, zstandard 0.25.0, ruff 0.17.5",
+    "command": "python -m pytest -q",
+    "result": {
+      "passed": 262,
+      "skipped": 5,
+      "failed": 0,
+      "skipped_reason": "тести v1, яким потрібен пакет викладача materials/"
+    },
+    "lint": "ruff check . — без зауважень",
+    "new_tests": {
+      "tests/test_learn_features.py": 8,
+      "tests/test_learn_journal.py": 6,
+      "tests/test_learn_models.py": 11,
+      "tests/test_learn_runtime.py": 11,
+      "tests/test_learn_lifecycle.py": 9,
+      "tests/test_learn_rules.py": 5,
+      "tests/test_learn_e2e.py": 7,
+      "tests/test_vault_bench.py": 3,
+      "tests/test_experiment_credibility.py": 4,
+      "tests/test_ga.py": "+1 (власний декодер)"
+    },
+    "scenarios": {
+      "cold_start": "test_cold_start_collects_measurements_without_model; test_cold_start_restart_and_restore_without_learning",
+      "restart": "test_cold_start_restart_and_restore_without_learning (стан і журнал у новому процесі)",
+      "damaged_model_state_journal_config": "test_damaged_learning_falls_back_and_backup_continues[*]; test_damaged_model_falls_back_and_rollback_via_cli; test_missing_corrupt_and_incompatible_models_are_rejected; test_loading_never_unpickles",
+      "duplicates": "test_duplicates_are_ignored_and_counted; test_repeated_operation_is_not_journaled_twice; test_delayed_stages_arrive_later_and_are_not_duplicated",
+      "delayed_missing_telemetry": "test_delayed_and_missing_outcomes_are_visible_not_imputed; test_delayed_stages_arrive_later_and_are_not_duplicated; test_harvest_distinguishes_protection_stages",
+      "drift": "test_mass_rewrite_is_quarantined_and_freezes_updates; test_feature_drift_freezes_updates_and_falls_back; test_clock_going_backwards_quarantines_operation",
+      "cycle_and_rollback": "test_full_cycle_shadow_evaluate_promote_rollback; test_full_cycle_through_cli; test_health_rolls_back_harmful_active_model; test_candidate_failing_shadow_is_rejected_and_baseline_stays",
+      "resource_limits_priority": "test_training_yields_to_restore_repair_and_full_queue; test_pause_limits_and_disable; test_feature_cost_does_not_grow_with_chunk_size; test_features_read_bounded_windows_only",
+      "hard_rules": "test_learning_cannot_touch_deletion_retention_copies_permissions_or_encryption; test_active_model_is_used_but_unprofitable_compression_becomes_store",
+      "no_label_leakage": "test_features_do_not_depend_on_chosen_action_and_labels_are_measured; test_lineage_counts_changes_only_after_decisions",
+      "honest_evaluation": "test_split_is_time_ordered_and_group_exclusive; test_bootstrap_gain_sign_and_interval; test_learned_beats_fixed_and_baseline_on_this_data",
+      "real_backup_restore_off_and_on": "test_real_backup_restore_identical_with_adaptation_off_and_active; scripts/vault_bench.py adaptive (verify, restore, repair у всіх гілках)",
+      "v1_credibility": "tests/test_experiment_credibility.py"
+    },
+    "not_verified": [
+      "користь на реальних даних замовника",
+      "робота на Windows і macOS (CI — Linux)",
+      "тривала робота з мільйонами блоків і журналом біля max_decisions",
+      "фізична втрата живлення під час запису журналу (журнал synchronous=NORMAL і на гарантії копій не впливає)"
+    ]
+  },
+  "known_limitations": [
+    "Користь виміряно лише на синтетичному корпусі; на ньому модель не стала активною — база лишилась.",
+    "За типового probe.rate = 0.05 перше навчання можливе приблизно після ~7000 нових блоків.",
+    "Головний overhead — ознаки (~160–180 мкс на блок у тракті), поки навчання ввімкнене; learn disable прибирає його повністю.",
+    "Офлайн-test містить лише нові лінії файлів, тому може бути оптимістичним; вирішує shadow на живих пробах.",
+    "Проби обмежені бюджетом на операцію: у дуже великих backup пробні блоки зміщені до початку операції.",
+    "Журнал і моделі локальні: recover після втрати диска відновлює копії, а навчання починає з холодного старту.",
+    "Закомічені results/ v1 (F1, Q, ga_params.json) отримано старою процедурою; оновить scripts/reproduce.py на пакеті викладача."
+  ],
+  "handoff": {
+    "next_stage": "Гліб",
+    "integration_complete": true,
+    "what_is_wired": [
+      "backup: рішення, проби, журнал, лінія, drift",
+      "run: крок циклу після черги",
+      "backup --wait і verify: стадії захисту",
+      "restore і repair: пріоритет над навчанням",
+      "status: підсумок навчання",
+      "init: секція learning"
+    ],
+    "do_not_change_without_version_bump": [
+      "схема ознак log3-chunk-features/1 (порядок і визначення)",
+      "формат артефакту log3-advisor-model v1",
+      "журнал learn/journal.sqlite v1",
+      "log3-learn-state v1",
+      "усе з handoff stage1.json"
+    ]
+  }
+}

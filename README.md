@@ -3,7 +3,9 @@
 Командний проєкт 3 з дисципліни «Алгоритми і оптимізація програмних рішень» (КНУ). Система вирішує, які
 події журналу зберегти, у скількох копіях і на яких вузлах, щоб за обмеженого бюджету реплікації після
 відмов вузлів відновити максимум критичних подій, а копії лишались нечитабельними для сторони з доступом до
-вузлів.
+вузлів. Поверх навчального тракту зроблено встановлюваний продукт **LOG3 Vault**: захищене резервне
+копіювання й реплікація довільних файлів із перевірюваними гарантіями, локальним навчанням вибору
+стиснення і модулем автоматичного захисту (`python -m log3.defense`).
 
 ```
 session.csv → [1] перцептрон (клас 0/1/2) → v_i = priority(клас) + critical_bonus·critical
@@ -28,8 +30,10 @@ session.csv → [1] перцептрон (клас 0/1/2) → v_i = priority(к�
 
 - Приймальні кейси C1: **12 з 12** ([results/c1.md](results/c1.md)); усі 6 еталонних реплік викладача наш
   передавач відтворює побайтово, усі 7 пошкоджених відхиляються з очікуваним кодом.
-- Перцептрон: macro-F1 0.947 на valid (вибір моделі), **0.930** на розміченому `session.csv`, який у виборі
-  не брав участі; F1_min = 0.56. Без вікна історії — 0.35 ([матриця помилок](results/confusion_matrix.md)).
+- Перцептрон: macro-F1 0.947 на validation (`valid.csv`, вибір моделі, оцінка оптимістична), **0.930** на
+  розміченому `session.csv`, який у виборі не брав участі; F1_min = 0.56. Без вікна історії — 0.35
+  ([матриця помилок](results/confusion_matrix.md)); ця абляція тоді прибирала й поточний severity запису,
+  тож завищувала внесок історії (див. «Достовірність експериментів» нижче).
 - ГА проти random search за однакового бюджету — [таблиця 6](results/tables/06_ga_vs_random.md), графік
   [ga_convergence.png](results/ga_convergence.png). Атака: ключ слабкого шифру знайдено в 10 з 10 випадків,
   жодна з 2000 змінених реплік не прийнята ([results/attack.md](results/attack.md)).
@@ -97,9 +101,93 @@ Dev-перевірки виконуйте в окремому клоні без 
 сіль і nonce випадкові, тому шифротексти не відтворюються побайтово між запусками. Порівнюйте також
 S, R і `static_q`, що не містить шуму таймера.
 
+### Достовірність експериментів (виправлено на етапі 2)
+
+- Абляція «без вікна історії» лишає поточний severity запису: прибирається лише історія.
+- Джерело (`materials` чи синтетичний `dev`) обліковується для кожної частини окремо
+  (`data_sources` у `classifier_metrics.json`); приховане змішування справжніх і синтетичних частин
+  заборонене, `--allow-mixed-sources` дозволяє його лише явно й видно у звіті.
+- Набір відбору називається validation: `valid.csv` для перцептрона, seeds 101..110 для ГА. Незалежна
+  перевірка — `session.csv` і таблиці звіту на третьому наборі seeds.
+- Підсумкові параметри обираються рівноправно серед конфігу (база), ГА і random search за validation без
+  порушень порогів C1. Попередня процедура порівнювала лише ГА з конфігом, хоча на validation random search
+  був трохи кращим (0.543 проти 0.520, `docs/REPORT.md`).
+- Закомічені `results/` (F1, Q, `ga_params.json`) отримано старим кодом на пакеті викладача T01; нові
+  процедури оновлять їх під час `python scripts/reproduce.py` з `materials/`. Без пакета викладача їх не
+  перераховано, щоб не підміняти результати T01 синтетикою.
+- F1 і Q описують навчальний журнал подій LOG3. Вони нічого не кажуть про якість резервного копіювання
+  документів чи їхню бізнесову важливість у файловому режимі; там свої вимірювання (`docs/LEARNING.md`).
+
 Чинна S використовує `b_ref = 16·N` у байтах і `b_stored = 8·global_used_bytes` у бітах.
 Формулу збережено до уточнення визначення `B_ref` у методичці; її не слід трактувати як звичайну
 частку економії байтів. Деталі й відкрите питання — у `docs/DECISIONS.md` за 2026-11-14.
+
+## Файловий режим (LOG3 Vault)
+
+Окремий від навчального тракту продукт у `log3/vault/`: захищене резервне копіювання й реплікація
+довільних файлів (PDF, DOCX, архіви, виконувані — будь-які байти) без навчальної вибірки. Навчальний
+LOG3 v1 вище не змінено.
+
+```bash
+export LOG3_VAULT_PASSPHRASE='довга парольна фраза' LOG3_VAULT_REPO=./vault-repo
+python -m log3.vault init --min-copies 1
+python -m log3.vault backend add disk --type localdir --path /mnt/other-disk/log3 --domain other-disk
+python -m log3.vault backup ~/Documents --wait     # код 0 лише коли рівень protected
+python -m log3.vault restore latest ./restored
+```
+
+Тракт: читання → блоки → стиснення (Store / Zstandard / Гаффман LOG3) → AES-256-GCM → стійкий spool і
+черга в SQLite → реплікація на локальний каталог і віддалений вузол (HTTPS, токен, закріплений
+сертифікат) → перевірка → відновлення через staging. Стан версії явний: `accepted_local` не означає
+`protected`. Команди, модель станів, гарантії, формати, межі й обмеження —
+[docs/FILE_MODE.md](docs/FILE_MODE.md); машинозчитуваний опис етапу — [stage1.json](stage1.json).
+
+**Локальне навчання (етап 2).** Нова інсталяція працює без моделі на базовій політиці й сама збирає
+вимірювання: ознаки блока → фактичні байти, час і CPU кодування, плюс проби інших допустимих дій.
+Цикл baseline → shadow → оцінювання → active → rollback вбудовано в `run`; модель вибирає лише кодек і
+рівень, а жорсткі правила (копії, retention, шифрування, права, видалення) їй недоступні. Команди
+`python -m log3.vault learn status|train|evaluate|promote|rollback|pause|…`, опис —
+[docs/LEARNING.md](docs/LEARNING.md), виміряна користь і overhead — [results/vault/](results/vault/),
+машинозчитуваний опис — [stage2.json](stage2.json).
+
+## Етап 3: встановлюваний продукт і захист
+
+**Встановлення.** З вихідного коду: `pip install -e .` (команди `log3-vault`, `log3-defense`); офлайн із
+релізу: `python scripts/build_release.py --verify dist`, потім
+`pip install --no-index --find-links dist/wheelhouse dist/log3-3.0.0-py3-none-any.whl`. Windows/Linux,
+служба, оновлення й міграції, аварійне відновлення, моніторинг — [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+```bash
+log3-vault init && log3-vault backend add disk --type localdir --path /mnt/usb/log3 --domain usb-disk
+log3-vault backup ~/Documents --wait          # 0 лише коли protected
+log3-vault doctor && log3-vault health        # перевірки й пороги (код 0/4)
+log3-vault find --path "*.pdf"                # пошук: маніфести розшифровуються лише локально
+log3-vault drill                              # пробне відновлення з побайтовою звіркою
+log3-vault metrics --format prometheus        # без web-панелі, без шляхів у мітках
+python log3_restore.py --backend /mnt/usb/log3 restore latest ./out   # без інсталяції (emergency-kit)
+```
+
+**Захист.** `python -m log3.defense` (quick) або `--profile full`; `--step` — покроково, `--dry-run` —
+лише план, `--stage NAME` — окремий етап. Модуль запускає справжні команди й для кожного кроку показує мету,
+команду без секретів, живий вивід, тривалість, код завершення й перевірений результат; журнал і JSON-підсумок —
+у `defense-out/`. Сценарії учасників — [docs/DEFENSE.md](docs/DEFENSE.md).
+
+**Гарантії** ([docs/GUARANTEES.md](docs/GUARANTEES.md)): що означають локальне приймання, запис копії й
+`protected`; які відмови витримує кожен стан; що потрібно для restore; переповнення й повтори; матриця з 9
+відмов, яку модуль захисту перевіряє в нових процесах (прогін 2026-11-18, Windows 11: 9 з 9 пройдено — [results/vault/failure_matrix.md](results/vault/failure_matrix.md)). Ключі, мережа, межі доступу ОС і
+приватність метаданих — [docs/SECURITY.md](docs/SECURITY.md).
+
+**Продуктові вимірювання** (не навчальні S/R/T/Q): [results/vault/product_bench.md](results/vault/product_bench.md)
+— точність restore, виконання політики, простір, throughput, затримка захисту, CPU/RAM, час відновлення
+каталогу, overhead адаптації; цілі задано для конкретного комп'ютера в
+[results/vault/targets.json](results/vault/targets.json) і перевіряє `python scripts/product_bench.py`.
+Числа отримано на одному диску й не є універсальною продуктивністю.
+
+**Межі.** Втрату живлення фізично не перевірено (аварії процесу — це `os._exit` у точках коду). Процеси
+демонстрації працюють на одному диску: це процесні й мережеві відмови, а не незалежні фізичні диски. Версії,
+що не дійшли до `protected`, гинуть разом із локальним диском. Локальний CLI ролей не має: межа — права ОС
+на каталог сховища. Ліміт комітів (≤ 1000 змінених текстових рядків на кожен коміт) перевіряє CI
+(`scripts/check_commit_size.py`).
 
 ## Структура
 
@@ -118,10 +206,20 @@ log3/
   nn/            features.py, mlp.py (власний MLP, backprop, Adam/SGD), train.py, classify.py, data.py
   ga/            ga.py (турнір, BLX-α, мутація, елітизм), search.py (random search, експеримент)
   attack/        weak_cipher.py, key_search.py (ГА відновлює ключ), tamper.py, __main__.py (звіт)
+  vault/         файловий режим: формат об'єктів і маніфест, крипто, кодеки, каталог і черга SQLite,
+                 backend-и (каталог, HTTPS-вузол), захоплення, реплікація, verify/repair/gc, restore, CLI
+  vault/learn/   локальне навчання вибору стиснення: ознаки, журнал, моделі, цикл shadow/active/rollback
+  vault/keys.py, keyops.py  keyring, ротація, зміна фрази, експорт, підпис службових файлів
+  vault/ops.py   doctor, health, queue, find, drill, Prometheus; standalone_restore.py — restore без інсталяції
+  defense/       модуль захисту: виконавець, лабораторія, етапи, матриця відмов
 tests/           pytest: формат, крипто, еталонні пакети, ДП проти перебору, планувальник, тракт, NN, ГА, атака
-scripts/         reproduce.py
-results/         C1, таблиці звіту 1–6, матриця помилок, журнал і графік ГА, атака, final_metrics.json
-docs/            REPORT.md (звіт), DECISIONS.md (лог рішень)
+scripts/         reproduce.py; vault_bench.py, vault_corpus.py, product_bench.py (вимірювання), build_release.py,
+                 check_commit_size.py
+deploy/          служби: systemd (клієнт, вузол), планувальник Windows
+results/         C1, таблиці звіту 1–6, матриця помилок, журнал і графік ГА, атака, final_metrics.json; vault/ — вимірювання файлового режиму
+docs/            REPORT.md (звіт), DECISIONS.md (лог рішень), FILE_MODE.md, LEARNING.md, GUARANTEES.md,
+                 SECURITY.md, OPERATIONS.md, DEFENSE.md, DEPENDENCIES.md
+stage1.json, stage2.json, stage3.json   машинозчитуваний опис етапів
 META-USAGE.md    облік використання ШІ (обов'язковий артефакт курсу)
 ```
 
@@ -129,9 +227,9 @@ META-USAGE.md    облік використання ШІ (обов'язкови
 
 | Учасник | Зона |
 | :-- | :-- |
-| Гліб Степанов ([@Galactic717](https://github.com/Galactic717)), голова | формат LOG3, захист, відновлення, інтеграція, метрика, звіт |
-| [@yaroslavronenko-ux](https://github.com/yaroslavronenko-ux) | Гаффман, ДП, розміщення по вузлах |
-| [@artemkovbasuk780-hub](https://github.com/artemkovbasuk780-hub) | перцептрон, генетичний алгоритм, модуль атаки |
+| Гліб Степанов ([@Galactic717](https://github.com/Galactic717)), голова | формат LOG3, захист, відновлення, інтеграція, метрика, звіт; етап 3 — продукт, гарантії, ключі, модуль захисту |
+| [@yaroslavronenko-ux](https://github.com/yaroslavronenko-ux) | Гаффман, ДП, розміщення по вузлах; етап 1 — файлове ядро, черга, реплікація, restore, CLI |
+| [@artemkovbasuk780-hub](https://github.com/artemkovbasuk780-hub) | перцептрон, генетичний алгоритм, модуль атаки; етап 2 — локальне навчання вибору стиснення |
 
 Рішення кожної зони з обґрунтуванням — у [docs/DECISIONS.md](docs/DECISIONS.md), результати — у
 [docs/REPORT.md](docs/REPORT.md). Облік використання ШІ-інструментів, якого вимагає методичка, —

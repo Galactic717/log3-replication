@@ -1,13 +1,18 @@
-"""Навчання перцептрона і вибір моделі за macro-F1 на valid (умова §3.1, методичка 11.23).
+"""Навчання перцептрона і вибір моделі за macro-F1 на validation (умова §3.1, методичка 11.23).
 
     python -m log3.nn.train            # навчити, зберегти log3/nn/model.npz і results/confusion_matrix.md
 
 Протокол:
   * мала фіксована сітка (вікно історії H × прихований шар), у кожній точці ≥ 3 ініціалізації;
-  * у межах запуску — ваги епохи з найкращим macro-F1 на valid (early stopping);
-  * обирається найкращий за macro-F1 на valid запуск. Holdout викладач рахує сам;
-  * valid уже використано для вибору, тож його F1 оптимістичний. Чесна оцінка — розмічений
-    session.csv (test), який у виборі не бере участі.
+  * у межах запуску — ваги епохи з найкращим macro-F1 на validation (early stopping);
+  * обирається найкращий за macro-F1 на validation запуск. Holdout викладач рахує сам;
+  * validation (файл valid.csv) — набір відбору, тож його F1 оптимістичний. Чесна оцінка —
+    розмічений session.csv (test), який у виборі не бере участі;
+  * джерело ('materials' чи синтетичний 'dev') обліковується для кожної частини окремо;
+    змішування справжніх і синтетичних частин заборонене (--allow-mixed-sources лише явно);
+  * абляція «без вікна історії» лишає поточний severity запису: прибирається лише історія.
+F1 тут — якість класифікації подій журналу LOG3 на даних викладача. Вона нічого не каже про
+якість резервного копіювання документів чи їхню бізнесову важливість (файловий режим, log3.vault).
 Дисбаланс класів: ваги в loss c_k = n / (K · n_k) (рідкісний клас «дорожчий»).
 Нормалізація — за статистикою train, зберігається разом із вагами.
 """
@@ -100,10 +105,30 @@ def _prepare(spec: FeatureSpec, splits: dict):
     return norm, X
 
 
-def train_model(cfg: Config | None = None, *, seeds=(0, 1, 2), settings: TrainSettings = TrainSettings(),
-                grid: dict = GRID, model_path: Path = MODEL_PATH, report: bool = True) -> dict:
+SPLITS = ("train", "validation", "test")
+
+
+def check_sources(splits: dict, allow_mixed: bool = False) -> dict[str, str]:
+    """Джерело кожної частини; приховане змішування справжніх і синтетичних даних — помилка."""
+    sources = {k: v[2] for k, v in splits.items()}
+    if len(set(sources.values())) > 1 and not allow_mixed:
+        raise ValueError(f"частини даних з різних джерел {sources}: справжні й синтетичні не змішуються "
+                         "непомітно (покладіть усі CSV у materials/ або запустіть з --allow-mixed-sources)")
+    return sources
+
+
+def no_history_spec(spec: FeatureSpec) -> FeatureSpec:
+    """Абляція «без вікна історії»: ознаки самого запису, включно з його поточним severity."""
+    return FeatureSpec(spec.history, spec.time_window_ms, tuple(n for n in spec.temporal if n == "severity"))
+
+
+def train_model(cfg: Config | None = None, *, seeds=(0, 1, 2), settings: TrainSettings | None = None,
+                grid: dict = GRID, model_path: Path = MODEL_PATH, report: bool = True,
+                allow_mixed_sources: bool = False) -> dict:
     cfg = cfg or load_config()
-    splits = {k: load_split(k) for k in ("train", "valid", "test")}
+    settings = settings or TrainSettings()
+    splits = {k: load_split(k) for k in SPLITS}
+    sources = check_sources(splits, allow_mixed_sources)
     y = {k: np.asarray(v[1]) for k, v in splits.items()}
     n_classes = cfg.n_classes
     if max(int(v.max()) for v in y.values()) >= n_classes:
@@ -116,28 +141,32 @@ def train_model(cfg: Config | None = None, *, seeds=(0, 1, 2), settings: TrainSe
         for hidden in grid["hidden"]:
             for sd in seeds:
                 s = TrainSettings(**{**asdict(settings), "hidden": hidden, "seed": sd})
-                net, f1 = train_one(X["train"], y["train"], X["valid"], y["valid"], s, n_classes=n_classes)
+                net, f1 = train_one(X["train"], y["train"], X["validation"], y["validation"], s,
+                                    n_classes=n_classes)
                 f1_test = macro_f1(y["test"], net.predict(X["test"]))
-                runs.append({"history": history, "hidden": list(hidden), "seed": sd, "f1_valid": f1,
+                runs.append({"history": history, "hidden": list(hidden), "seed": sd, "f1_validation": f1,
                              "f1_test": f1_test, "_net": net, "_norm": norm, "_spec": spec, "_X": X})
-                print(f"[nn] H={history} hidden={hidden} seed={sd}: macro-F1 valid {f1:.4f}, test {f1_test:.4f}")
-    best = max(runs, key=lambda r: (r["f1_valid"], -r["seed"]))
+                print(f"[nn] H={history} hidden={hidden} seed={sd}: macro-F1 validation {f1:.4f}, "
+                      f"test {f1_test:.4f}")
+    best = max(runs, key=lambda r: (r["f1_validation"], -r["seed"]))
     net, norm, spec, X = best["_net"], best["_norm"], best["_spec"], best["_X"]
     pred = {k: net.predict(X[k]) for k in X}
-    meta = {"data_source": splits["train"][2], "history": spec.history, "hidden": best["hidden"],
-            "seed": best["seed"], "macro_f1_valid": best["f1_valid"], "macro_f1_test": best["f1_test"],
-            "accuracy_valid": float((pred["valid"] == y["valid"]).mean()), "n_classes": n_classes,
+    meta = {"data_source": sources["train"] if len(set(sources.values())) == 1 else "mixed",
+            "data_sources": sources, "history": spec.history, "hidden": best["hidden"],
+            "seed": best["seed"], "macro_f1_validation": best["f1_validation"], "macro_f1_test": best["f1_test"],
+            "accuracy_validation": float((pred["validation"] == y["validation"]).mean()), "n_classes": n_classes,
             "settings": asdict(settings) | {"hidden": best["hidden"], "seed": best["seed"]}}
     save_model(model_path, net, norm, spec, meta)
     if not report:
         return meta
 
-    # абляція «без вікна історії»: той самий запуск, лише ознаки самого запису
-    flat = FeatureSpec(spec.history, spec.time_window_ms, ())
+    # абляція «без вікна історії»: той самий запуск, ознаки самого запису разом із поточним severity
+    flat = no_history_spec(spec)
     _, Xf = _prepare(flat, splits)
     s = TrainSettings(**{**asdict(settings), "hidden": tuple(best["hidden"]), "seed": best["seed"]})
-    net_f, f1_flat = train_one(Xf["train"], y["train"], Xf["valid"], y["valid"], s, n_classes=n_classes)
-    meta["macro_f1_valid_no_history"] = f1_flat
+    net_f, f1_flat = train_one(Xf["train"], y["train"], Xf["validation"], y["validation"], s, n_classes=n_classes)
+    meta["macro_f1_validation_no_history"] = f1_flat
+    meta["no_history_features"] = feature_names(flat)
     meta["macro_f1_test_no_history"] = macro_f1(y["test"], net_f.predict(Xf["test"]))
     meta["runs"] = [{k: v for k, v in r.items() if not k.startswith("_")} for r in runs]
 
@@ -147,8 +176,13 @@ def train_model(cfg: Config | None = None, *, seeds=(0, 1, 2), settings: TrainSe
     lines = [
         "# Матриця помилок перцептрона",
         "",
-        f"Згенеровано `python -m log3.nn.train`. Дані: **{meta['data_source']}** "
-        "(train.csv — навчання, valid.csv — вибір моделі, session.csv — незалежна перевірка).",
+        "Згенеровано `python -m log3.nn.train`. Джерела частин: "
+        + ", ".join(f"{k} — **{v}**" for k, v in sources.items())
+        + " (train.csv — навчання, valid.csv — validation, тобто відбір моделі, session.csv — test, "
+        "незалежна перевірка).",
+        "",
+        "F1 — якість класифікації подій журналу LOG3; на якість резервного копіювання документів чи їхню "
+        "бізнесову важливість її не переносимо.",
         "",
         f"Класи: {', '.join(f'{i} — {n}' for i, n in enumerate(cfg.class_names))}. F1_min = {cfg.F1_min}.",
         f"Архітектура: {X['train'].shape[1]} ознак → {' → '.join(map(str, best['hidden']))} → {n_classes}, "
@@ -158,23 +192,24 @@ def train_model(cfg: Config | None = None, *, seeds=(0, 1, 2), settings: TrainSe
         "Сітка вибору: H ∈ " + str(list(grid["history"])) + ", прихований шар ∈ "
         + str([list(h) for h in grid["hidden"]]) + f", seeds {list(seeds)} — разом {len(runs)} запусків.",
         "",
-        "| H | прихований шар | seed | macro-F1 valid | macro-F1 session (test) |",
+        "| H | прихований шар | seed | macro-F1 validation | macro-F1 session (test) |",
         "| --: | :-- | --: | --: | --: |",
-        *[f"| {r['history']} | {r['hidden']} | {r['seed']} | {r['f1_valid']:.4f} | {r['f1_test']:.4f} |"
+        *[f"| {r['history']} | {r['hidden']} | {r['seed']} | {r['f1_validation']:.4f} | {r['f1_test']:.4f} |"
           for r in runs],
         "",
-        f"Обрано H={spec.history}, {best['hidden']}, seed={best['seed']}: macro-F1 valid = **{best['f1_valid']:.4f}** "
-        f"(оптимістична: за valid обирали), session = **{best['f1_test']:.4f}** (чесна оцінка).",
+        f"Обрано H={spec.history}, {best['hidden']}, seed={best['seed']}: macro-F1 validation = "
+        f"**{best['f1_validation']:.4f}** (оптимістична: за validation обирали), session = "
+        f"**{best['f1_test']:.4f}** (чесна оцінка).",
         "",
-        f"Без вікна історії (лише ознаки самого запису): macro-F1 valid = {f1_flat:.4f}, "
+        f"Без вікна історії (ознаки самого запису разом із поточним severity): macro-F1 validation = {f1_flat:.4f}, "
         f"session = {meta['macro_f1_test_no_history']:.4f}. Різниця — внесок часових ознак, "
         "передусім для класу 2.",
         "",
-        "## valid.csv",
+        "## validation (valid.csv, набір відбору)",
         "",
-        *_cm_markdown(confusion_matrix(y["valid"], pred["valid"], n_classes)),
+        *_cm_markdown(confusion_matrix(y["validation"], pred["validation"], n_classes)),
         "",
-        *_per_class(confusion_matrix(y["valid"], pred["valid"], n_classes)),
+        *_per_class(confusion_matrix(y["validation"], pred["validation"], n_classes)),
         "",
         "## session.csv (не брав участі у виборі)",
         "",
@@ -192,6 +227,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--epochs", type=int, default=TrainSettings.epochs)
+    ap.add_argument("--allow-mixed-sources", action="store_true",
+                    help="дозволити частини з різних джерел (materials і dev); у звіті це видно")
     a = ap.parse_args()
-    m = train_model(seeds=a.seeds, settings=TrainSettings(epochs=a.epochs))
+    m = train_model(seeds=a.seeds, settings=TrainSettings(epochs=a.epochs), allow_mixed_sources=a.allow_mixed_sources)
     print(json.dumps({k: v for k, v in m.items() if k != "runs"}, ensure_ascii=False, indent=2))

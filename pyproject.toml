@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "log3"
+version = "3.0.0"
+description = "LOG3: навчальний тракт пріоритетної реплікації журналів і LOG3 Vault — захищене резервне копіювання й реплікація довільних файлів"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",          # BSD-3-Clause — навчальний тракт і локальне навчання
+    "cryptography>=42",    # Apache-2.0 OR BSD-3-Clause — AES-GCM, scrypt, HKDF, TLS-сертифікати
+    "zstandard>=0.22",     # BSD-3-Clause — кодек zstd
+]
+
+[project.optional-dependencies]
+plots = ["matplotlib>=3.8"]                # графік збіжності ГА
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+log3-vault = "log3.vault.cli:main"
+log3-defense = "log3.defense.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["log3*"]
+
+[tool.setuptools.package-data]
+"log3.nn" = ["model.npz"]

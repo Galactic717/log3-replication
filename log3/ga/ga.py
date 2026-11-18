@@ -76,12 +76,16 @@ def _lo_hi(bounds):
 def run_ga(fitness: Callable[[Params], float], *, pop_size: int, generations: int, seed: int,
            elitism: bool = True, tournament_k: int = 3, p_crossover: float = 0.9,
            p_mutation: float | None = None, sigma: float = 0.1, blx_alpha: float = 0.5,
-           bounds: dict[str, tuple[float, float]] | None = None, map_fn=map) -> GAResult:
-    """map_fn — як оцінювати популяцію (map або pool.map для паралельних процесів)."""
+           bounds: dict[str, tuple[float, float]] | None = None, map_fn=map,
+           decode_fn: Callable[[np.ndarray], object] | None = None) -> GAResult:
+    """map_fn — як оцінювати популяцію (map або pool.map для паралельних процесів).
+    decode_fn — як перетворити хромосому на кандидата (типово pipeline.Params; файловий режим
+    передає власний декодер для параметрів навчання)."""
     if pop_size < 2 or generations < 1:
         raise ValueError("pop_size ≥ 2, generations ≥ 1")
     bounds = bounds or DEFAULT_BOUNDS
     lo, hi = _lo_hi(bounds)
+    dec = decode_fn or (lambda x: decode(x, bounds))
     n_genes = len(lo)
     p_mut = 1.0 / n_genes if p_mutation is None else p_mutation
     rng = np.random.default_rng(seed)
@@ -90,7 +94,7 @@ def run_ga(fitness: Callable[[Params], float], *, pop_size: int, generations: in
     def evaluate(pop):
         nonlocal evals
         evals += len(pop)
-        return np.array(list(map_fn(fitness, [decode(ind, bounds) for ind in pop])))
+        return np.array(list(map_fn(fitness, [dec(np.clip(ind, lo, hi)) for ind in pop])))
 
     pop = lo + rng.random((pop_size, n_genes)) * (hi - lo)       # покоління 0: рівномірно в межах
     fit = evaluate(pop)
@@ -126,4 +130,4 @@ def run_ga(fitness: Callable[[Params], float], *, pop_size: int, generations: in
             best_i = int(fit.argmax())
             best_x, best_f = pop[best_i].copy(), float(fit[best_i])
 
-    return GAResult(decode(best_x, bounds), best_f, history, evals, mean_hist)
+    return GAResult(dec(best_x), best_f, history, evals, mean_hist)

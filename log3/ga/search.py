@@ -5,11 +5,14 @@
 Чесне порівняння: обидва методи отримують ОДНАКОВУ кількість обчислень фітнесу
 (pop_size · generations). Фітнес — pipeline.evaluate: середнє α·S + β·R за трьома
 сценаріями і seeds FIT_SEEDS моделі відмов, зі штрафом за порушення порогів C1.
-Обрані параметри перевіряються на ІНШИХ seeds (HOLDOUT_SEEDS): офіційний Q рахують на
+Обрані параметри перевіряються на ІНШИХ seeds (VALIDATION_SEEDS): офіційний Q рахують на
 прихованих seeds, тож виграш лише на seeds фітнесу нічого не означає (методичка 11.93).
-Підсумкові параметри: серед найкращих особин ГА з усіх повторів — та, що на holdout не порушила
-жодного порогу C1 і має найкращий holdout-фітнес; якщо такої нема або вона не краща за параметри
-з конфігу — параметри з конфігу. Таблиці звіту рахуються на третьому наборі seeds.
+Ці seeds — набір ВІДБОРУ (validation), а не незалежна перевірка: за ними обирають підсумкові
+параметри. Кандидати рівноправні: параметри з конфігу (база), найкращі особини ГА і найкращі
+точки random search з усіх повторів. Обирається кандидат без порушень порогів C1 на validation із
+найкращим validation-фітнесом; за рівності — конфіг. Незалежна перевірка — таблиці звіту на
+третьому наборі seeds. Q і фітнес тут — про навчальний журнал LOG3; на роботу з документами
+файлового режиму їх не переносимо.
 """
 from __future__ import annotations
 
@@ -29,7 +32,7 @@ from .ga import DEFAULT_BOUNDS, GAResult, _lo_hi, bounds_from_config, decode, ru
 
 RESULTS = ROOT / "results"
 FIT_SEEDS = tuple(range(1, 21))
-HOLDOUT_SEEDS = tuple(range(101, 111))
+VALIDATION_SEEDS = tuple(range(101, 111))
 _cache: FitnessCache | None = None
 
 
@@ -42,9 +45,23 @@ def fitness(p: Params) -> float:
     return evaluate(p, FIT_SEEDS, cache=_cache)
 
 
-def holdout(p: Params) -> tuple[float, int]:
-    """(фітнес, порушень порогів C1) на seeds, яких пошук не бачив."""
-    return evaluate_detail(p, HOLDOUT_SEEDS, cache=_cache)
+def validation(p: Params) -> tuple[float, int]:
+    """(фітнес, порушень порогів C1) на seeds відбору, яких пошук не бачив."""
+    return evaluate_detail(p, VALIDATION_SEEDS, cache=_cache)
+
+
+def select_params(base: Params, base_val: tuple[float, int], rows: list[dict]) -> dict:
+    """Рівноправний відбір серед конфігу, ГА і random search за validation (без порушень C1)."""
+    cands = [{"source": "config", "repeat": None, "params": base, "validation": base_val}]
+    for r in rows:
+        cands.append({"source": "ga", "repeat": r["repeat"], "params": r["ga"].best_params, "validation": r["ga_val"]})
+        cands.append({"source": "random", "repeat": r["repeat"], "params": r["rs"].best_params,
+                      "validation": r["rs_val"]})
+    ok = [c for c in cands if c["validation"][1] == 0]
+    if not ok:
+        return {**cands[0], "accepted": False}
+    best = max(ok, key=lambda c: (c["validation"][0], c["source"] == "config"))
+    return {**best, "accepted": best["source"] != "config"}
 
 
 def random_search(fitness: Callable[[Params], float], *, evaluations: int, seed: int,
@@ -95,8 +112,8 @@ def experiment(*, pop: int = 16, gens: int = 10, repeats: int = 3, workers: int 
     base = default_params(cfg)
     rows = []
     with ProcessPoolExecutor(workers, initializer=_init) as ex:
-        base_fit, base_hold = ex.map(fitness, [base]), ex.map(holdout, [base])
-        base_fit, base_hold = next(base_fit), next(base_hold)
+        base_fit, base_val = ex.map(fitness, [base]), ex.map(validation, [base])
+        base_fit, base_val = next(base_fit), next(base_val)
         for r in range(repeats):
             t0 = time.perf_counter()
             ga = run_ga(fitness, pop_size=pop, generations=gens, seed=r, bounds=bounds, map_fn=ex.map)
@@ -105,11 +122,11 @@ def experiment(*, pop: int = 16, gens: int = 10, repeats: int = 3, workers: int 
             rs = random_search(fitness, evaluations=pop * gens, seed=1000 + r, bounds=bounds, block=pop,
                                map_fn=ex.map)
             t_rs = time.perf_counter() - t0
-            gh, sh = ex.map(holdout, [ga.best_params, rs.best_params])
-            rows.append({"repeat": r, "ga": ga, "ga_hold": gh, "t_ga": t_ga, "rs": rs, "rs_hold": sh, "t_rs": t_rs})
-            print(f"[ga] repeat {r}: GA {ga.best_fitness:.4f} (holdout {gh[0]:.4f}, порушень {gh[1]})  "
-                  f"RS {rs.best_fitness:.4f} (holdout {sh[0]:.4f}, порушень {sh[1]})  "
-                  f"base {base_fit:.4f} ({base_hold[0]:.4f}, {base_hold[1]})")
+            gv, sv = ex.map(validation, [ga.best_params, rs.best_params])
+            rows.append({"repeat": r, "ga": ga, "ga_val": gv, "t_ga": t_ga, "rs": rs, "rs_val": sv, "t_rs": t_rs})
+            print(f"[ga] repeat {r}: GA {ga.best_fitness:.4f} (validation {gv[0]:.4f}, порушень {gv[1]})  "
+                  f"RS {rs.best_fitness:.4f} (validation {sv[0]:.4f}, порушень {sv[1]})  "
+                  f"base {base_fit:.4f} ({base_val[0]:.4f}, {base_val[1]})")
 
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / "tables").mkdir(exist_ok=True)
@@ -123,18 +140,17 @@ def experiment(*, pop: int = 16, gens: int = 10, repeats: int = 3, workers: int 
                             f"{rs.history[g]:.6f}"])
     _plot(RESULTS / "ga_convergence.png", [(r_["ga"], r_["rs"]) for r_ in rows], pop, base_fit)
 
-    valid = [r_ for r_ in rows if r_["ga_hold"][1] == 0]
-    best = max(valid or rows, key=lambda r_: r_["ga_hold"][0])
-    accepted = bool(valid) and (base_hold[1] > 0 or best["ga_hold"][0] >= base_hold[0])
-    chosen = best["ga"].best_params if accepted else base
+    sel = select_params(base, base_val, rows)
+    accepted, chosen = sel["accepted"], sel["params"]
+    winner = next((r_ for r_ in rows if r_["repeat"] == sel["repeat"]), None)
     TUNED_PARAMS.write_text(json.dumps({
-        "source": "ga" if accepted else "config",
+        "source": sel["source"], "repeat": sel["repeat"],
         "params": asdict(chosen),
-        "fitness_seeds": list(FIT_SEEDS), "holdout_seeds": list(HOLDOUT_SEEDS),
-        "fitness": best["ga"].best_fitness if accepted else base_fit,
-        "holdout": best["ga_hold"][0] if accepted else base_hold[0],
-        "holdout_violations": best["ga_hold"][1] if accepted else base_hold[1],
-        "config_fitness": base_fit, "config_holdout": base_hold[0],
+        "fitness_seeds": list(FIT_SEEDS), "validation_seeds": list(VALIDATION_SEEDS),
+        "fitness": (winner["ga" if sel["source"] == "ga" else "rs"].best_fitness if winner else base_fit),
+        "validation": sel["validation"][0], "validation_violations": sel["validation"][1],
+        "config_fitness": base_fit, "config_validation": base_val[0],
+        "note": "validation seeds — набір відбору; незалежна перевірка — таблиці звіту на третьому наборі seeds",
     }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     def fmt(p: Params) -> str:
@@ -143,44 +159,45 @@ def experiment(*, pop: int = 16, gens: int = 10, repeats: int = 3, workers: int 
 
     ga_f = [r_["ga"].best_fitness for r_ in rows]
     rs_f = [r_["rs"].best_fitness for r_ in rows]
-    ga_h = [r_["ga_hold"][0] for r_ in rows]
-    rs_h = [r_["rs_hold"][0] for r_ in rows]
+    ga_h = [r_["ga_val"][0] for r_ in rows]
+    rs_h = [r_["rs_val"][0] for r_ in rows]
     lines = [
         "# Таблиця 6. Збіжність ГА проти випадкового пошуку",
         "",
         f"Згенеровано `python -m log3.ga.search --pop {pop} --gens {gens} --repeats {repeats}`.",
         "Фітнес — середнє α·S + β·R за трьома сценаріями й seeds моделі відмов "
         f"{list(FIT_SEEDS)}; порушення порогу втрати критичних подій сценарію знімає 1. "
-        f"Holdout — ті самі параметри на seeds {list(HOLDOUT_SEEDS)}, яких пошук не бачив.",
+        f"Validation — ті самі параметри на seeds {list(VALIDATION_SEEDS)}, яких пошук не бачив; за ними "
+        "відбираємо підсумкові параметри серед конфігу, ГА і random search рівноправно.",
         f"Бюджет кожного методу: {pop} × {gens} = {pop * gens} обчислень фітнесу.",
         "Параметри: (window_records, budget_scale, second_copy_factor, critical_scale, pacing_slack).",
         "",
-        "| повтор | метод | фітнес | holdout | порушень порогів на holdout | параметри | час, с |",
+        "| повтор | метод | фітнес | validation | порушень порогів на validation | параметри | час, с |",
         "| --: | :-- | --: | --: | --: | :-- | --: |",
-        f"| — | параметри з конфігу | {base_fit:.4f} | {base_hold[0]:.4f} | {base_hold[1]} | {fmt(base)} | — |",
+        f"| — | параметри з конфігу | {base_fit:.4f} | {base_val[0]:.4f} | {base_val[1]} | {fmt(base)} | — |",
     ]
     for r_ in rows:
-        lines.append(f"| {r_['repeat']} | ГА | {r_['ga'].best_fitness:.4f} | {r_['ga_hold'][0]:.4f} | "
-                     f"{r_['ga_hold'][1]} | {fmt(r_['ga'].best_params)} | {r_['t_ga']:.0f} |")
-        lines.append(f"| {r_['repeat']} | random search | {r_['rs'].best_fitness:.4f} | {r_['rs_hold'][0]:.4f} | "
-                     f"{r_['rs_hold'][1]} | {fmt(r_['rs'].best_params)} | {r_['t_rs']:.0f} |")
+        lines.append(f"| {r_['repeat']} | ГА | {r_['ga'].best_fitness:.4f} | {r_['ga_val'][0]:.4f} | "
+                     f"{r_['ga_val'][1]} | {fmt(r_['ga'].best_params)} | {r_['t_ga']:.0f} |")
+        lines.append(f"| {r_['repeat']} | random search | {r_['rs'].best_fitness:.4f} | {r_['rs_val'][0]:.4f} | "
+                     f"{r_['rs_val'][1]} | {fmt(r_['rs'].best_params)} | {r_['t_rs']:.0f} |")
     lines += [
         "",
         f"Середнє за {repeats} повторами: ГА {np.mean(ga_f):.4f} ± {np.std(ga_f):.4f} "
-        f"(holdout {np.mean(ga_h):.4f}), random search {np.mean(rs_f):.4f} ± {np.std(rs_f):.4f} "
-        f"(holdout {np.mean(rs_h):.4f}), конфіг {base_fit:.4f} (holdout {base_hold[0]:.4f}).",
+        f"(validation {np.mean(ga_h):.4f}), random search {np.mean(rs_f):.4f} ± {np.std(rs_f):.4f} "
+        f"(validation {np.mean(rs_h):.4f}), конфіг {base_fit:.4f} (validation {base_val[0]:.4f}).",
         "",
         f"Елітизм: найкращий фітнес ГА не спадає між поколіннями в усіх повторах — "
         f"{'так' if all(np.all(np.diff(r_['ga'].history) >= -1e-12) for r_ in rows) else 'НІ'}.",
         "",
-        ("**Обрано параметри ГА** (повтор " + str(best["repeat"]) + "): на holdout "
-         f"{best['ga_hold'][0]:.4f} без порушень порогів проти {base_hold[0]:.4f} у конфігу. Вони записані в "
-         "`results/ga_params.json`, їх бере `python -m log3.pipeline` (повна система; `--no-ga` — параметри "
-         "з конфігу). Особину, що порушила поріг C1 хоч на одному holdout-прогоні, відкидаємо навіть із вищим "
+        (f"**Обрано параметри: {'ГА' if sel['source'] == 'ga' else 'random search'}** (повтор {sel['repeat']}): на "
+         f"validation {sel['validation'][0]:.4f} без порушень порогів проти {base_val[0]:.4f} у конфігу. Вони записані "
+         "в `results/ga_params.json`, їх бере `python -m log3.pipeline` (повна система; `--no-ga` — параметри з "
+         "конфігу). Кандидата, що порушив поріг C1 хоч на одному validation-прогоні, відкидаємо навіть із вищим "
          "фітнесом: це підгонка під конкретні послідовності відмов seeds фітнесу."
          if accepted else
-         "**Параметри ГА не прийнято:** на holdout вони порушують пороги C1 або не кращі за конфіг — виграш на "
-         "seeds фітнесу виявився підгонкою під конкретні відмови. Пайплайн лишається на параметрах з конфігу."),
+         "**Залишено параметри з конфігу:** жоден кандидат ГА чи random search не кращий за конфіг на validation без "
+         "порушень порогів C1 — виграш на seeds фітнесу виявився підгонкою під конкретні відмови."),
         "",
         "Криві збіжності — `results/ga_log.csv`, графік — `results/ga_convergence.png`.",
     ]

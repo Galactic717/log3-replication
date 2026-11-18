@@ -1,0 +1,122 @@
+{
+  "environment": {
+    "python": "3.13.18",
+    "platform": "Linux-6.18.44-fc-v553-x86_64-with-glibc2.39",
+    "cpus": 2
+  },
+  "scenario": "baseline: backup -> restart -> verify -> restore (етап 1, без навчання)",
+  "corpus": {
+    "files": 112,
+    "bytes": 33714176,
+    "seed": 1,
+    "projects": 10
+  },
+  "state_after_accept": "ACCEPTED_LOCAL",
+  "state_after_run": "PROTECTED",
+  "policy_satisfied": true,
+  "verify": {
+    "checked": 226,
+    "ok": 226,
+    "missing": 0,
+    "corrupt": 0,
+    "unreachable": 0,
+    "spool_corrupt": 0
+  },
+  "restore_identical": true,
+  "storage": {
+    "chunks": 112,
+    "stored_bytes": 18591399,
+    "plain_bytes": 33970605,
+    "store_chunks": 48,
+    "ratio_stored_to_plain": 0.5473
+  },
+  "time_to_protected_seconds": 2.136808959,
+  "restore_seconds": 0.325,
+  "incremental": {
+    "changed_files": 21,
+    "state": "PROTECTED",
+    "chunks": 117,
+    "stored_bytes": 20935204,
+    "plain_bytes": 37793197,
+    "store_chunks": 51
+  },
+  "steps": [
+    {
+      "step": "init",
+      "exit_code": 0,
+      "wall_seconds": 0.276,
+      "cpu_seconds": 0.203,
+      "children_max_rss_kib": 80120
+    },
+    {
+      "step": "backend-disk",
+      "exit_code": 0,
+      "wall_seconds": 0.129,
+      "cpu_seconds": 0.126,
+      "children_max_rss_kib": 80120
+    },
+    {
+      "step": "node-cert",
+      "exit_code": 0,
+      "wall_seconds": 0.146,
+      "cpu_seconds": 0.145,
+      "children_max_rss_kib": 80120
+    },
+    {
+      "step": "backend-node",
+      "exit_code": 0,
+      "wall_seconds": 0.132,
+      "cpu_seconds": 0.13,
+      "children_max_rss_kib": 80120
+    },
+    {
+      "step": "backup (accept local)",
+      "exit_code": 0,
+      "wall_seconds": 0.471,
+      "cpu_seconds": 0.396,
+      "children_max_rss_kib": 82268
+    },
+    {
+      "step": "run (after restart)",
+      "exit_code": 0,
+      "wall_seconds": 2.013,
+      "cpu_seconds": 0.552,
+      "children_max_rss_kib": 82268
+    },
+    {
+      "step": "status",
+      "exit_code": 0,
+      "wall_seconds": 0.141,
+      "cpu_seconds": 0.138,
+      "children_max_rss_kib": 82268
+    },
+    {
+      "step": "verify",
+      "exit_code": 0,
+      "wall_seconds": 5.147,
+      "cpu_seconds": 0.358,
+      "children_max_rss_kib": 82268
+    },
+    {
+      "step": "restore",
+      "exit_code": 0,
+      "wall_seconds": 0.48,
+      "cpu_seconds": 0.405,
+      "children_max_rss_kib": 82268
+    },
+    {
+      "step": "status repo",
+      "exit_code": 0,
+      "wall_seconds": 0.138,
+      "cpu_seconds": 0.138,
+      "children_max_rss_kib": 82268
+    },
+    {
+      "step": "backup incremental --wait",
+      "exit_code": 0,
+      "wall_seconds": 0.726,
+      "cpu_seconds": 0.408,
+      "children_max_rss_kib": 89488
+    }
+  ]
+}

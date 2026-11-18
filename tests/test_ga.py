@@ -93,3 +93,19 @@ def test_ga_on_pipeline_evaluate_smoke():
     r = run_ga(lambda p: evaluate(p, (1,), scenarios=("normal",), cache=cache), pop_size=3, generations=2, seed=0)
     assert 0.0 < r.best_fitness <= 1.0
     assert isinstance(r.best_params, Params)
+
+
+def test_run_ga_with_custom_decoder_keeps_budget_and_elitism():
+    """Узагальнення для файлового режиму: власний декодер, той самий бюджет pop·gens."""
+    bounds = {"a": (0.0, 1.0), "b": (-2.0, 2.0)}
+    calls = []
+
+    def fit(c):
+        calls.append(c)
+        return -((c["a"] - 0.3) ** 2 + (c["b"] - 1.0) ** 2)
+
+    res = run_ga(fit, pop_size=6, generations=5, seed=3, bounds=bounds,
+                 decode_fn=lambda x: {"a": float(x[0]), "b": float(x[1])})
+    assert res.evaluations == len(calls) == 30
+    assert isinstance(res.best_params, dict) and res.best_fitness > -0.2
+    assert all(np.diff(res.history) >= -1e-12)
