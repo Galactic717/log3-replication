@@ -5,7 +5,7 @@
 перезапуску) -> перезапуск вузла -> run -> status -> verify -> restore -> побайтове порівняння.
 
 Кожна команда — новий процес, тож час включає старт інтерпретатора. CPU і пікова RSS — дочірніх
-процесів (resource.RUSAGE_CHILDREN). Дані — синтетичний корпус scripts/vault_corpus.py.
+процесів (кожен процес CLI звітує сам, log3.vault.procstat). Дані — синтетичний корпус scripts/vault_corpus.py.
 
 Сценарій adaptive: однакове навантаження в окремих сховищах для гілок навчання off / defaults /
 accelerated; щораунду backup -> run (run виконує крок циклу навчання), між раундами змінюються файли.
@@ -19,7 +19,6 @@ import argparse
 import json
 import os
 import platform
-import resource
 import socket
 import sqlite3
 import subprocess
@@ -37,34 +36,29 @@ PASSPHRASE = "bench passphrase, not a secret"
 TOKEN = "bench-node-token"
 
 
-def _cpu() -> tuple[float, int]:
-    r = resource.getrusage(resource.RUSAGE_CHILDREN)
-    return r.ru_utime + r.ru_stime, r.ru_maxrss
-
-
 class Bench:
     def __init__(self, tmp: Path, extra_env: dict | None = None):
         self.tmp, self.repo = tmp, tmp / "repo"
         self.env = {**os.environ, "PYTHONPATH": str(ROOT), "LOG3_VAULT_PASSPHRASE": PASSPHRASE,
                     "LOG3_NODE_TOKEN": TOKEN, "LOG3_VAULT_REPO": str(self.repo), "LOG3_NODE_QUIET": "1",
-                    "PYTHONIOENCODING": "utf-8", **(extra_env or {})}
+                    "PYTHONIOENCODING": "utf-8", "LOG3_VAULT_RUSAGE": "1", **(extra_env or {})}
         self.node: subprocess.Popen | None = None
         self.port = 0
         self.steps: list[dict] = []
 
     def cli(self, step: str, *args, check: bool = True) -> dict:
         argv = [sys.executable, "-m", "log3.vault", args[0], "--json", *map(str, args[1:])]
-        cpu0, _ = _cpu()
         t0 = time.perf_counter()
         p = subprocess.run(argv, env=self.env, capture_output=True, text=True, encoding="utf-8", timeout=3600)
         wall = time.perf_counter() - t0
-        cpu1, rss = _cpu()
         try:
             out = json.loads(p.stdout)
         except ValueError:
             out = {"stdout": p.stdout[-2000:], "stderr": p.stderr[-2000:]}
+        usage = out.get("rusage") or {}                 # процес CLI міряє себе сам (Linux і Windows)
         self.steps.append({"step": step, "exit_code": p.returncode, "wall_seconds": round(wall, 3),
-                           "cpu_seconds": round(cpu1 - cpu0, 3), "children_max_rss_kib": rss})
+                           "cpu_seconds": round(usage.get("cpu_seconds") or 0.0, 3),
+                           "children_max_rss_kib": usage.get("peak_rss_kib") or 0})
         if check and p.returncode != 0:
             raise RuntimeError(f"{step}: код {p.returncode}: {out}")
         return out

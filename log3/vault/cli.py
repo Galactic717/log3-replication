@@ -294,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
         code, data, ok = e.exit_code, {"error": {"code": e.code, "message": e.message}}, False
     except BackendError as e:
         code, data, ok = Exit.ERROR, {"error": {"code": "E_BACKEND", "message": str(e)}}, False
+    if os.environ.get("LOG3_VAULT_RUSAGE") == "1":
+        from .procstat import self_usage
+        data["rusage"] = self_usage()                         # CPU і пікова RSS цього процесу
     if a.json:
         print(json.dumps({"ok": ok, "command": a.command, "exit_code": int(code), "exit_name": code.name, **data},
                          ensure_ascii=False))

@@ -346,10 +346,10 @@ def train(repo, *, force: bool = False) -> dict:
 
 
 def _peak_rss_kib() -> int | None:
+    from ..procstat import peak_rss_kib
     try:
-        import resource  # лише POSIX
-        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    except (ImportError, OSError):
+        return peak_rss_kib()
+    except OSError:
         return None
 
 
