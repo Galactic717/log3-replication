@@ -1,0 +1,30 @@
+# Черга реплікації LOG3 Vault як служба systemd (Linux).
+# Парольна фраза службі НЕ потрібна: run передає вже зашифровані об'єкти.
+# Встановлення: docs/OPERATIONS.md, розділ «Служба».
+[Unit]
+Description=LOG3 Vault replication queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=log3
+Group=log3
+Environment=LOG3_VAULT_REPO=/var/lib/log3-vault
+# токен вузла — файлом із правами 0600, не змінною в unit-файлі
+Environment=LOG3_NODE_TOKEN_FILE=/etc/log3/node.token
+ExecStart=/opt/log3/bin/log3-vault run --daemon --interval 30 --json
+Restart=on-failure
+RestartSec=10
+# аварійне завершення безпечне: зафіксовані транзакції цілі, завислі завдання повертаються за lease
+KillSignal=SIGTERM
+TimeoutStopSec=60
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/log3-vault
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

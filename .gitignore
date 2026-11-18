@@ -6,6 +6,12 @@ venv/
 .pytest_cache/
 .ipynb_checkpoints/
 
+# Збірка й демонстрація (релізні артефакти не комітяться)
+dist/
+build/
+*.egg-info/
+defense-out/
+
 # Secrets
 .env
 *.key
