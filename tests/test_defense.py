@@ -1,4 +1,6 @@
-"""Модуль захисту: приховування секретів і розбір виводу."""
+"""Модуль захисту: приховування секретів, розбір виводу, план усіх етапів без виконання."""
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,3 +36,15 @@ def test_failed_check_and_unexpected_exit_code_are_reported(tmp_path):
     assert ctx.show_argv(["x", V("v"), V("later")]) == "x abc <later>"
     assert last_json('text\n{"ok": true}\n') == {"ok": True}
     runner.finish({})
+
+
+def test_dry_run_lists_every_stage_with_real_commands(tmp_path):
+    p = subprocess.run([sys.executable, "-m", "log3.defense", "--profile", "full", "--dry-run", "--quiet",
+                        "--out", str(tmp_path)], cwd=ROOT, capture_output=True, text=True, encoding="utf-8",
+                       stdin=subprocess.DEVNULL, timeout=600)
+    assert p.returncode == 0, p.stdout + p.stderr
+    summary = json.loads(next(tmp_path.glob("defense-*.json")).read_text(encoding="utf-8"))
+    names = {s["stage"] for s in summary["stages"]}
+    assert {"showcase", "keys", "update", "install", "matrix:catalog-loss", "matrix:wrong-key"} <= names
+    commands = [s["command"] for st in summary["stages"] for s in st["steps"] if s["command"]]
+    assert any("log3.vault backup" in c for c in commands) and all("demo passphrase" not in c for c in commands)
