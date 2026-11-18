@@ -34,8 +34,9 @@ from .catalog import now_ns
 from .cryptobox import KIND_CHUNK, KIND_MANIFEST, OBJECT_FORMAT_VERSION, SUITE
 from .errors import Exit, VaultError, crashpoint
 from .fsutil import free_bytes, fsync_dir, write_durable
+from .keys import MAX_OBJECTS_PER_KEY, sign_meta
 from .learn.runtime import group_key, runtime_for
-from .replicate import ensure_jobs
+from .replicate import ensure_jobs, pointer_doc, pointer_name
 from .repo import Repo
 from .states import VersionState
 
@@ -215,6 +216,12 @@ def backup(repo: Repo, source: Path, *, name: str | None = None, priority: int =
         cat.set_state(prev["version_id"], VersionState.FAILED, error="захоплення перервано")
     box = repo.box                                          # секрет перевіряється до будь-яких записів
     min_copies, target = _precheck(repo, priority)
+    limit = repo.cfg["crypto"].get("max_objects_per_key", MAX_OBJECTS_PER_KEY)
+    if cat.sealed_count(box.keys.key_id) >= limit:         # межа випадкових nonce -> новий ключ даних
+        from .keyops import rotate_key
+        rotate_key(repo, reason="nonce_limit")
+        box = repo.box
+    repo.sign_config()                                      # backend-и отримають актуальну підписану конфігурацію
     root, kind = (source, "dir") if source.is_dir() else (source.parent, "file")
     version_id, created = uuid.uuid4().hex, now_ns()
     name = name or source.name or "root"
@@ -282,10 +289,12 @@ def backup(repo: Repo, source: Path, *, name: str | None = None, priority: int =
             for oid in (*sorted(used), manifest_oid):
                 o = cap.objs[oid]
                 if o["new"]:
-                    cat.x("INSERT INTO objects(oid, kind, stored_len, sha256, plain_len, codec, in_spool, created_ns) "
-                          "VALUES(?,?,?,?,?,?,1,?) ON CONFLICT(oid) DO UPDATE SET stored_len=excluded.stored_len, "
-                          "sha256=excluded.sha256, codec=excluded.codec, in_spool=1",
-                          (oid, o["kind"], o["stored_len"], o["sha256"], o["plain_len"], o["codec"], created))
+                    cat.x("INSERT INTO objects(oid, kind, stored_len, sha256, plain_len, codec, in_spool, created_ns, "
+                          "key_id) VALUES(?,?,?,?,?,?,1,?,?) ON CONFLICT(oid) DO UPDATE SET "
+                          "stored_len=excluded.stored_len, sha256=excluded.sha256, codec=excluded.codec, in_spool=1, "
+                          "key_id=excluded.key_id",
+                          (oid, o["kind"], o["stored_len"], o["sha256"], o["plain_len"], o["codec"], created,
+                           box.keys.key_id))
                     cat.x("DELETE FROM replicas WHERE oid=? AND state!='CONFIRMED'", (oid,))
                 elif cat.one("SELECT 1 FROM objects WHERE oid=?", (oid,)) is None:
                     raise VaultError("E_RACE", "блок зник із каталогу під час захоплення (паралельний gc); повторіть")
@@ -297,13 +306,19 @@ def backup(repo: Repo, source: Path, *, name: str | None = None, priority: int =
             if queued > repo.limits["queue_max_jobs"]:
                 raise VaultError("E_QUEUE_FULL", f"версія потребує черги з {queued} завдань, межа "
                                  f"{repo.limits['queue_max_jobs']}", Exit.CAPACITY)
+            cat.count_sealed(box.keys.key_id, len(cap.new))
+            mo = cap.objs[manifest_oid]
+            pointer = sign_meta(box.keys.meta_key(), pointer_name(version_id), pointer_doc(
+                version_id, manifest_oid, mo["stored_len"], mo["sha256"], created)).decode("utf-8")
             accepted = now_ns()
             cat.set_state(version_id, VersionState.ACCEPTED_LOCAL, manifest_oid=manifest_oid, accepted_ns=accepted,
+                          pointer=pointer,
                           retention_until_ns=accepted + int(repo.policy["retention_days"] * 86400e9),
                           files=sum(e["type"] == "file" for e in entries), bytes=total, skipped=len(skipped))
             if cap.advisor.errors:
                 cat.event("advisor_errors", cap.advisor.errors, version_id)
     except BaseException as e:                              # версію не прийнято: прибрати лише її власні нові файли
+        cat.count_sealed(box.keys.key_id, len(cap.new))     # nonce використано, хоч об'єкти й не прийнято
         for oid in cap.new:
             if cat.one("SELECT 1 FROM objects WHERE oid=? AND in_spool=1", (oid,)) is None:
                 repo.spool_path(oid).unlink(missing_ok=True)

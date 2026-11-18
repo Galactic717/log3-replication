@@ -170,11 +170,12 @@ def test_config_rejects_secrets_and_bad_policy():
 def test_fair_queue_low_priority_is_not_starved(tmp_path):
     cfg = new_config()
     cfg["crypto"]["kdf"] = KDF
-    repo = Repo.create(tmp_path / "repo", cfg, b"unit-test")
+    repo = Repo.create(tmp_path / "repo", cfg, b"unit-test passphrase")
     with repo.cat.tx():
         for i in range(300):                               # 295 високого пріоритету і 5 низького, поставлених останніми
             prio = 0 if i >= 295 else 2
-            repo.cat.x("INSERT INTO objects VALUES(?,1,10,'s',10,0,1,0)", (f"{i:064x}",))
+            repo.cat.x("INSERT INTO objects(oid, kind, stored_len, sha256, plain_len, codec, in_spool, created_ns) "
+                       "VALUES(?,1,10,'s',10,0,1,0)", (f"{i:064x}",))
             repo.cat.x("INSERT INTO jobs(job_id, oid, backend, state, priority, next_at_ns, enq_ns) "
                        "VALUES(?,?,'b','PENDING',?,0,?)", (f"j{i}", f"{i:064x}", prio, i))
     batch = _lease(repo)
@@ -189,10 +190,10 @@ def test_file_changing_during_read_is_skipped_not_stored_torn(tmp_path, monkeypa
     from log3.vault import capture
     from log3.vault.repo import add_backend
 
-    monkeypatch.setenv("LOG3_VAULT_PASSPHRASE", "unit-test")
+    monkeypatch.setenv("LOG3_VAULT_PASSPHRASE", "unit-test passphrase")
     cfg = new_config(min_copies=1)
     cfg["crypto"]["kdf"] = KDF
-    repo = Repo.create(tmp_path / "repo", cfg, b"unit-test")
+    repo = Repo.create(tmp_path / "repo", cfg, b"unit-test passphrase")
     add_backend(repo, {"name": "d", "type": "localdir", "path": str(tmp_path / "d"), "failure_domain": "x"})
     src = tmp_path / "src"
     src.mkdir()

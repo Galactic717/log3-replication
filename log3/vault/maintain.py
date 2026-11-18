@@ -7,9 +7,10 @@ from pathlib import Path
 from . import manifest
 from .backends.base import Backend
 from .catalog import now_ns
-from .cryptobox import KIND_CHUNK, KIND_MANIFEST
+from .cryptobox import KIND_CHUNK, KIND_MANIFEST, read_secret
 from .errors import BackendError, Exit, VaultError
 from .fsutil import free_bytes, sha256_file
+from .keys import sign_meta
 from .replicate import CONFIG_META, LIVE, ensure_jobs, pointer_name, protection, refresh_version, run_queue
 from .repo import Repo, add_backend, validate_config
 from .states import LEVEL, ReplicaState, VersionState
@@ -166,35 +167,63 @@ def gc(repo: Repo, *, apply: bool = False) -> dict:
     return out
 
 
-def recover(path: Path, spec: dict, backend: Backend) -> dict:
-    """Відтворює сховище після втрати локального диска з одного backend-а: конфігурація без секретів
-    і покажчики версій лежать там відкрито, маніфести розшифровуються парольною фразою."""
+def recover(path: Path, spec: dict, backend: Backend, *, accept_legacy_meta: bool = False) -> dict:
+    """Відтворює сховище після втрати локального диска з одного backend-а.
+
+    repo-config.json і покажчики версій на backend-і підписані HMAC ключем службових файлів
+    (keys.py): підроблений чи переставлений файл відхиляється, а не імпортується. Параметри KDF
+    із недовіреного файла обмежено ще до виведення ключа. Файли без підпису (сховища до етапу 3)
+    приймаються лише з accept_legacy_meta=True; тоді конфігурацію слід переглянути й виконати
+    key publish."""
+    from .keys import RepoKeys, parse_meta, verify_meta
     from .restore import open_object
 
     raw = backend.get_meta(CONFIG_META)
     if raw is None:
         raise VaultError("E_NOT_FOUND", "на backend-і нема repo-config.json: тут не було захищених версій",
                          Exit.NOT_FOUND)
-    cfg = json.loads(raw)
+    cfg = parse_meta(raw)
+    legacy = "meta_mac" not in cfg
+    if legacy and not accept_legacy_meta:
+        raise VaultError("E_META", "repo-config.json без підпису (створено до етапу 3); якщо backend довірений, "
+                         "повторіть із --accept-legacy-meta", Exit.INTEGRITY)
+    try:
+        crypto = cfg["crypto"]
+        passphrase = read_secret(crypto["passphrase_env"], prompt="Парольна фраза сховища: ")
+        keys = RepoKeys(passphrase, crypto)
+    except (KeyError, TypeError):
+        raise VaultError("E_META", "repo-config.json пошкоджено", Exit.INTEGRITY) from None
+    meta_key = keys.meta_key()
+    if not legacy:
+        cfg = verify_meta(meta_key, CONFIG_META, cfg)
     validate_config(cfg)
-    from .cryptobox import PassphraseKeys, read_secret
-    passphrase = read_secret(cfg["crypto"]["passphrase_env"], prompt="Парольна фраза сховища: ")
-    if PassphraseKeys(passphrase, cfg["crypto"]["kdf"]).key_id != cfg["crypto"]["key_id"]:
-        raise VaultError("E_KEY", "парольна фраза не відповідає цьому сховищу", Exit.KEY)
-    key_id, cfg["crypto"]["key_id"] = cfg["crypto"]["key_id"], None
-    repo = Repo.create(path, cfg, passphrase)
-    assert repo.cfg["crypto"]["key_id"] == key_id
+    repo = Repo.create(path, cfg, passphrase, new_secret=False)
     add_backend(repo, spec)
-    cat, out = repo.cat, {"versions": 0, "skipped": 0, "objects": 0}
+    cat, out = repo.cat, {"versions": 0, "skipped": 0, "objects": 0, "rejected_meta": 0,
+                          "legacy_unsigned_meta": int(legacy)}
     for name in backend.list_meta():
         if not name.startswith("version-"):
             continue
         try:
-            ptr = json.loads(backend.get_meta(name) or b"{}")
+            ptr = parse_meta(backend.get_meta(name) or b"{}")
+            signed = "meta_mac" in ptr
+            if signed:
+                ptr = verify_meta(meta_key, name, ptr)
+            elif not accept_legacy_meta:
+                raise VaultError("E_META", f"{name} без підпису", Exit.INTEGRITY)
+            else:
+                out["legacy_unsigned_meta"] += 1
+        except VaultError:
+            out["rejected_meta"] += 1                        # підміна покажчика: версію не імпортуємо
+            continue
+        try:
             moid = ptr["manifest_oid"]
             doc = open_object(repo, moid, KIND_MANIFEST, ptr["manifest_len"], ptr["manifest_sha256"], [backend])
             m = manifest.load(doc, insensitive=False)
-        except (VaultError, BackendError, KeyError, ValueError):
+            if m["version_id"] != ptr["version_id"] or cat.one("SELECT 1 FROM versions WHERE version_id=?",
+                                                               (m["version_id"],)):
+                raise VaultError("E_MANIFEST", "маніфест не відповідає покажчику", Exit.INTEGRITY)
+        except (VaultError, BackendError, KeyError, ValueError, TypeError):
             out["skipped"] += 1                             # покажчик без цілого маніфесту: версію не відновити
             continue
         objs = {moid: {"plain_len": len(doc), "stored_len": ptr["manifest_len"], "sha256": ptr["manifest_sha256"],
@@ -203,12 +232,13 @@ def recover(path: Path, spec: dict, backend: Backend) -> dict:
         files = [e for e in m["entries"] if e["type"] == "file"]
         with cat.tx():
             cat.x("INSERT INTO versions(version_id, op_id, name, root, state, priority, min_copies, target_copies, "
-                  "manifest_oid, created_ns, heartbeat_ns, accepted_ns, retention_until_ns, files, bytes, skipped) "
-                  "VALUES(?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
+                  "manifest_oid, created_ns, heartbeat_ns, accepted_ns, retention_until_ns, files, bytes, skipped, "
+                  "pointer) VALUES(?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?)",
                   (m["version_id"], m["operation_id"], m["name"], m["source"]["root"], VersionState.ACCEPTED_LOCAL,
                    repo.policy["min_copies"], repo.policy["min_copies"], moid, m["created_at_ns"], now_ns(),
                    m["created_at_ns"], m["created_at_ns"] + int(repo.policy["retention_days"] * 86400e9),
-                   len(files), sum(e["size"] for e in files), len(m["skipped"])))
+                   len(files), sum(e["size"] for e in files), len(m["skipped"]),
+                   sign_meta(meta_key, name, ptr).decode("utf-8") if signed else None))
             for oid, o in objs.items():
                 cat.x("INSERT OR IGNORE INTO objects(oid, kind, stored_len, sha256, plain_len, codec, in_spool, "
                       "created_ns) VALUES(?,?,?,?,?,?,0,?)", (oid, o["kind"], o["stored_len"], o["sha256"],

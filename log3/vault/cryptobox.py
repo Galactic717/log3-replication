@@ -15,23 +15,21 @@ AAD = заголовок (35 B) || object_id (32 B): об'єкт не можна
 """
 from __future__ import annotations
 
-import base64
 import getpass
 import hashlib
 import hmac
 import os
+import stat
 import struct
 import sys
 from pathlib import Path
 from typing import Protocol
 
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDFExpand
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 from .errors import Exit, VaultError
+from .keys import RepoKeys, new_kdf_params  # noqa: F401  (new_kdf_params — сумісний імпорт)
 
 MAGIC = b"L3FB"
 OBJECT_FORMAT_VERSION = 1
@@ -54,42 +52,27 @@ class KeyProvider(Protocol):
 
 
 def read_secret(env: str, *, prompt: str | None = None) -> bytes:
-    """Секрет зі змінної середовища ENV, з файла ENV_FILE або з інтерактивного запиту. Не з аргументів CLI."""
+    """Секрет зі змінної середовища ENV, з файла ENV_FILE або з інтерактивного запиту. Не з аргументів CLI.
+
+    Файл секрету на POSIX не може бути доступним групі чи іншим (як ключі ssh)."""
     if os.environ.get(env):
         return os.environ[env].encode("utf-8")
     if os.environ.get(env + "_FILE"):
-        return Path(os.environ[env + "_FILE"]).read_bytes().strip(b"\r\n")
+        path = Path(os.environ[env + "_FILE"])
+        if os.name == "posix" and path.stat().st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            raise VaultError("E_KEY_PERMS", f"файл секрету {env}_FILE доступний іншим користувачам; chmod 600",
+                             Exit.KEY)
+        return path.read_bytes().strip(b"\r\n")
     if prompt and sys.stdin.isatty():
         return getpass.getpass(prompt).encode("utf-8")
     raise VaultError("E_KEY", f"секрет не задано: встановіть змінну {env} або {env}_FILE", Exit.KEY)
 
 
-def new_kdf_params(n: int = 2 ** 15) -> dict:
-    return {"name": "scrypt", "salt_b64": base64.b64encode(os.urandom(16)).decode(), "n": n, "r": 8, "p": 1}
-
-
-def _expand(master: bytes, label: bytes) -> bytes:
-    return HKDFExpand(hashes.SHA256(), 32, b"log3-vault/v1/" + label).derive(master)
-
-
-class PassphraseKeys:
-    """Мінімальний KeyProvider: один майстер-ключ із парольної фрази (scrypt), підключі через HKDF."""
+class PassphraseKeys(RepoKeys):
+    """Ключі покоління 0 (сховище без keyring) — сумісний інтерфейс етапу 1."""
 
     def __init__(self, passphrase: bytes, kdf: dict):
-        if kdf.get("name") != "scrypt" or not passphrase:
-            raise VaultError("E_KEY", "потрібні непорожня парольна фраза і KDF scrypt", Exit.KEY)
-        salt = base64.b64decode(kdf["salt_b64"])
-        master = Scrypt(salt=salt, length=32, n=int(kdf["n"]), r=int(kdf["r"]), p=int(kdf["p"])).derive(passphrase)
-        self._data, self._id = _expand(master, b"data"), _expand(master, b"id")
-        self.key_id = hmac.new(_expand(master, b"check"), b"key-id", hashlib.sha256).hexdigest()[:16]
-
-    def data_key(self, key_id: str) -> bytes:
-        if key_id != self.key_id:
-            raise VaultError("E_KEY", f"об'єкт зашифровано ключем {key_id}, якого нема в цього провайдера", Exit.KEY)
-        return self._data
-
-    def id_key(self) -> bytes:
-        return self._id
+        super().__init__(passphrase, {"kdf": kdf})
 
 
 class CryptoBox:

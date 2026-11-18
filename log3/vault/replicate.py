@@ -40,6 +40,14 @@ def pointer_name(version_id: str) -> str:
     return f"version-{version_id}.json"
 
 
+def pointer_doc(version_id: str, manifest_oid: str, length: int, sha256: str, created_ns: int) -> dict:
+    """Покажчик версії на backend-і. Підписаний (keys.sign_meta) під час публікації версії;
+    версії, прийняті до етапу 3, мають непідписаний, доки key publish його не підпише."""
+    return {"format": "log3-version-pointer", "format_version": 1, "version_id": version_id,
+            "manifest_oid": manifest_oid, "manifest_len": length, "manifest_sha256": sha256,
+            "created_at_ns": created_ns}
+
+
 def job_id(repo: Repo, oid: str, backend: str) -> str:
     return str(uuid.uuid5(uuid.UUID(repo.cfg["repo_id"]), f"{oid}:{backend}"))
 
@@ -169,12 +177,10 @@ def _prepare(repo: Repo, r) -> _Work:
         if b in repo.backend_names()]
     metas = []
     if r["kind"] == KIND_MANIFEST:                         # покажчик версії та конфігурація без секретів:
-        metas.append((CONFIG_META, repo.config_bytes()))   # без них recover після втрати диска неможливий
-        for v in cat.q("SELECT version_id, created_ns FROM versions WHERE manifest_oid=?", (r["oid"],)):
-            metas.append((pointer_name(v["version_id"]), json.dumps({
-                "format": "log3-version-pointer", "format_version": 1, "version_id": v["version_id"],
-                "manifest_oid": r["oid"], "manifest_len": r["stored_len"], "manifest_sha256": r["sha256"],
-                "created_at_ns": v["created_ns"]}).encode()))
+        metas.append((CONFIG_META, repo.config_for_backends()))   # без них recover неможливий
+        for v in cat.q("SELECT version_id, created_ns, pointer FROM versions WHERE manifest_oid=?", (r["oid"],)):
+            metas.append((pointer_name(v["version_id"]), v["pointer"].encode() if v["pointer"] else json.dumps(
+                pointer_doc(v["version_id"], r["oid"], r["stored_len"], r["sha256"], v["created_ns"])).encode()))
     return _Work(r["job_id"], r["oid"], repo.backend(r["backend"]), r["stored_len"], r["sha256"],
                  spool if r["in_spool"] and spool.is_file() else None, sources, metas,
                  repo.spool / "tmp" / f"fetch-{r['job_id']}")
