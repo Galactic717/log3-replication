@@ -1,0 +1,30 @@
+name: release
+
+# Тег v* збирає релізні артефакти з перевіркою цілісності й додає їх до GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt setuptools
+      - run: python scripts/build_release.py --out dist --platform win_amd64
+      - run: python scripts/build_release.py --verify dist
+      - run: cd dist && tar czf ../log3-${{ github.ref_name }}-offline.tar.gz . && cd .. && sha256sum log3-${{ github.ref_name }}-offline.tar.gz > log3-${{ github.ref_name }}-offline.tar.gz.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            log3-${{ github.ref_name }}-offline.tar.gz
+            log3-${{ github.ref_name }}-offline.tar.gz.sha256
+            dist/SHA256SUMS
+            dist/RELEASE.json
+            dist/log3_restore.py
